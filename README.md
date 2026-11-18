@@ -6,10 +6,10 @@
 
 ## Linux 의존 패키지
 
+(build-essential, cmake, pkg-config는 별도로 설치되어 있어야 합니다.)
+
 ```sh
-sudo apt-get install -y build-essential cmake pkg-config \
-  libasound2-dev libx11-dev libxinerama-dev libxext-dev libxrandr-dev \
-  libxcursor-dev libxcomposite-dev libfreetype-dev libfontconfig1-dev libgl1-mesa-dev
+sudo apt-get install -y libasound2-dev libjack-jackd2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libglu1-mesa-dev mesa-common-dev
 ```
 
 ## 빌드와 테스트

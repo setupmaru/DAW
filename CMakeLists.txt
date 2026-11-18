@@ -59,6 +59,7 @@ endif()
 
 function(daw_configure_target target)
     target_include_directories(${target} PRIVATE src ${DAW_ASIO_INCLUDES})
+    target_compile_options(${target} PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
     target_compile_definitions(${target} PRIVATE
         JUCE_PLUGINHOST_VST3=1
         JUCE_PLUGINHOST_AU=0
