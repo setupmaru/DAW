@@ -61,6 +61,11 @@ struct ChainProcessorTests : public juce::UnitTest
         testSeventeenthInsertIsRetired();
         testFullRetiredQueueKeepsSlots();
         testReprepareKeepsSlots();
+        testMoveAfterRemoveUsesModelIndex();
+        testInsertAfterRemoveUsesModelIndex();
+        testMovesApplyInCommandOrder();
+        testInsertDuringRemoveFadeIsNotRetired();
+        testPhysicalArrayFullDefersInsert();
     }
 
     //==========================================================================
@@ -472,13 +477,20 @@ struct ChainProcessorTests : public juce::UnitTest
             expect (postInsert (chain, 100 + i, std::make_unique<GainProcessor> (1.0f)));
         runSine (chain, 1);
 
-        // A remove cannot hand its slot back yet: the slot must stay in the chain.
+        // A remove cannot hand its slot back yet: the slot stays in the chain
+        // (dry), but no longer counts as active.
         expect (postRemove (chain, 1));
         runSine (chain, 20);
-        expectEquals (chain.getNumActiveSlots(), 16, "remove waits while the retired queue is full");
+        expectEquals (chain.getNumActiveSlots(), 15, "a removing slot is not active");
 
-        // Neither can an insert into the full chain: it must wait, not be lost.
+        // 15 live slots: this insert must go in, not be retired.
         expect (postInsert (chain, 200, std::make_unique<GainProcessor> (1.0f)));
+        runSine (chain, 2);
+        expectEquals (chain.getNumActiveSlots(), 16);
+
+        // 16 live slots: this one must be retired, but the queue is full, so it
+        // has to wait, not be lost.
+        expect (postInsert (chain, 201, std::make_unique<GainProcessor> (1.0f)));
         runSine (chain, 2);
         expectEquals (chain.getNumActiveSlots(), 16);
 
@@ -489,12 +501,12 @@ struct ChainProcessorTests : public juce::UnitTest
 
         // Room again: both waiting slots come back on the next blocks.
         runSine (chain, 20);
-        expectEquals (chain.getNumActiveSlots(), 15, "the remove completed");
+        expectEquals (chain.getNumActiveSlots(), 16);
 
         ids = drainRetired (chain);
         std::sort (ids.begin(), ids.end());
-        expect (ids == std::vector<int> { 1, 200 }, "the removed slot and the 17th insert are both retired");
-        expectLastBlockIs (chain, 1.0f, "the remaining 15 unity gains pass the input through");
+        expect (ids == std::vector<int> { 1, 201 }, "the removed slot and the 17th live insert are both retired");
+        expectLastBlockIs (chain, 1.0f, "16 unity gains pass the input through");
     }
 
     void testReprepareKeepsSlots()
@@ -547,6 +559,174 @@ struct ChainProcessorTests : public juce::UnitTest
         runSine (chain, 20, 0.25f, 440.0, newRate, newBlock);
         expectEquals (chain.getNumActiveSlots(), 2);
         expectOutputIs (-0.5f, "queued insert is in the chain after re-prepare");
+    }
+
+    //==========================================================================
+    // Index and order: the message thread's model drops a removed slot at once
+    // and numbers later Insert/Move indices without it, while the audio side
+    // still holds that slot during its fade-out. All processors below are
+    // affine maps that do not commute, so the output shows the chain order.
+
+    // Start [A,B,C]; Remove A; Move(B -> 1). Model: [C,B].
+    void testMoveAfterRemoveUsesModelIndex()
+    {
+        beginTest ("testMoveAfterRemoveUsesModelIndex");
+
+        ChainProcessor chain;
+        chain.prepare (kSampleRate, kBlock);
+
+        // A = gain 2 keeps every unfaded switch here >= 0.425 on the test signal.
+        expect (postInsert (chain, 1, std::make_unique<GainProcessor> (2.0f), 0));     // A
+        expect (postInsert (chain, 2, std::make_unique<GainProcessor> (0.5f), 1));     // B
+        expect (postInsert (chain, 3, std::make_unique<OffsetProcessor> (0.6f), 2));   // C
+        runSine (chain, 20);
+        expectLastBlockMatches (chain, [] (std::int64_t n) { return sineSample (n) + 0.6f; }, "[A,B,C]");
+
+        auto out = runSine (chain, 2);
+        expect (postRemove (chain, 1));
+        expect (postMove (chain, 2, 1));
+        append (out, runSine (chain, 40));
+
+        expectLessThan (maxStep (out), kClickThreshold, "no click");
+        expectLastBlockMatches (chain, [] (std::int64_t n) { return 0.5f * (sineSample (n) + 0.6f); },
+                                "audio order is the model order [C,B]");
+        expectEquals (chain.getNumActiveSlots(), 2);
+        expect (drainRetired (chain) == std::vector<int> { 1 });
+    }
+
+    // Start [A,B,C]; Remove A; Insert X at 2. Model: [B,C,X].
+    void testInsertAfterRemoveUsesModelIndex()
+    {
+        beginTest ("testInsertAfterRemoveUsesModelIndex");
+
+        ChainProcessor chain;
+        chain.prepare (kSampleRate, kBlock);
+
+        expect (postInsert (chain, 1, std::make_unique<GainProcessor> (2.0f), 0));     // A
+        expect (postInsert (chain, 2, std::make_unique<InvertProcessor>(), 1));        // B
+        expect (postInsert (chain, 3, std::make_unique<GainProcessor> (0.5f), 2));     // C
+        runSine (chain, 20);
+        expectLastBlockIs (chain, -1.0f, "[A,B,C]");
+
+        auto out = runSine (chain, 2);
+        expect (postRemove (chain, 1));
+        expect (postInsert (chain, 4, std::make_unique<OffsetProcessor> (0.6f), 2));   // X
+        append (out, runSine (chain, 40));
+
+        expectLessThan (maxStep (out), kClickThreshold, "no click");
+        expectLastBlockMatches (chain, [] (std::int64_t n) { return -0.5f * sineSample (n) + 0.6f; },
+                                "audio order is the model order [B,C,X]");
+        expectEquals (chain.getNumActiveSlots(), 3);
+        expect (drainRetired (chain) == std::vector<int> { 1 });
+    }
+
+    // Start [X,A,B] with A bypassed (so A is dry first); Move(B -> 0); Move(A -> 0).
+    // Model: [A,B,X].
+    void testMovesApplyInCommandOrder()
+    {
+        beginTest ("testMovesApplyInCommandOrder");
+
+        ChainProcessor chain;
+        chain.prepare (kSampleRate, kBlock);
+
+        expect (postInsert (chain, 1, std::make_unique<OffsetProcessor> (0.6f), 0));          // X
+        expect (postInsert (chain, 2, std::make_unique<GainProcessor> (0.5f), 1, true));      // A (bypassed)
+        expect (postInsert (chain, 3, std::make_unique<OffsetProcessor> (-0.2f), 2));         // B
+        runSine (chain, 20);
+        expectLastBlockMatches (chain, [] (std::int64_t n) { return sineSample (n) + 0.4f; }, "[X,A(bypassed),B]");
+
+        auto out = runSine (chain, 2);
+        expect (postMove (chain, 3, 0));
+        expect (postMove (chain, 2, 0));
+        append (out, runSine (chain, 40));
+
+        // A is bypassed, so un-bypass it to make its position audible.
+        expect (postBypass (chain, 2, false));
+        append (out, runSine (chain, 20));
+
+        expectLessThan (maxStep (out), kClickThreshold, "no click");
+        // [A,B,X] = 0.5x - 0.2 + 0.6; the wrong order [B,A,X] would be 0.5x + 0.5.
+        expectLastBlockMatches (chain, [] (std::int64_t n) { return 0.5f * sineSample (n) + 0.4f; },
+                                "audio order is the model order [A,B,X]");
+        expectEquals (chain.getNumActiveSlots(), 3);
+    }
+
+    //==========================================================================
+    // The 16-slot limit counts live slots only, not slots fading out.
+    void testInsertDuringRemoveFadeIsNotRetired()
+    {
+        beginTest ("testInsertDuringRemoveFadeIsNotRetired");
+
+        ChainProcessor chain;
+        chain.prepare (kSampleRate, kBlock);
+
+        for (int id = 1; id <= ChainProcessor::kMaxSlots; ++id)
+            expect (postInsert (chain, id, std::make_unique<GainProcessor> (1.0f), id - 1));
+        runSine (chain, 2);
+        expectEquals (chain.getNumActiveSlots(), 16);
+
+        // Insert right after the remove, before its fade-out has ended.
+        auto out = runSine (chain, 2);
+        expect (postRemove (chain, 1));
+        expect (postInsert (chain, 17, std::make_unique<GainProcessor> (1.0f)));
+        append (out, runSine (chain, 1));
+        expectEquals (chain.getNumActiveSlots(), 16, "the removing slot does not count");
+        append (out, runSine (chain, 20));
+
+        expectLessThan (maxStep (out), kClickThreshold);
+        expectEquals (chain.getNumActiveSlots(), 16, "the new slot is active");
+        expect (drainRetired (chain) == std::vector<int> { 1 }, "only the removed slot is retired, not the new one");
+        expectLastBlockIs (chain, 1.0f, "16 unity gains pass the input through");
+    }
+
+    // When the physical array (live + fading-out slots) is full, an Insert into
+    // a chain with fewer than 16 live slots waits; it is never retired.
+    void testPhysicalArrayFullDefersInsert()
+    {
+        beginTest ("testPhysicalArrayFullDefersInsert");
+
+        ChainProcessor chain;
+        chain.prepare (kSampleRate, kBlock);
+
+        for (int id = 1; id <= ChainProcessor::kMaxSlots; ++id)
+            expect (postInsert (chain, id, std::make_unique<GainProcessor> (1.0f), id - 1));
+        runSine (chain, 2);
+
+        // Fill the retired queue, so removed slots stay in the array.
+        for (int i = 0; i < ChainProcessor::kRetiredQueueCapacity; ++i)
+            expect (postInsert (chain, 100 + i, std::make_unique<GainProcessor> (1.0f)));
+        runSine (chain, 1);
+
+        for (int id = 1; id <= ChainProcessor::kMaxSlots; ++id)
+            expect (postRemove (chain, id));
+        runSine (chain, 20);
+        expectEquals (chain.getNumActiveSlots(), 0);
+
+        for (int id = 17; id <= 32; ++id)
+            expect (postInsert (chain, id, std::make_unique<GainProcessor> (1.0f), id - 17));
+        runSine (chain, 2);
+        expectEquals (chain.getNumActiveSlots(), 16, "16 removing + 16 live slots fit");
+
+        expect (postRemove (chain, 17));
+        runSine (chain, 20);
+        expectEquals (chain.getNumActiveSlots(), 15);
+
+        // 15 live but 32 physical: the insert must wait.
+        expect (postInsert (chain, 33, std::make_unique<GainProcessor> (1.0f)));
+        runSine (chain, 2);
+        expectEquals (chain.getNumActiveSlots(), 15, "the insert waits while the array is full");
+
+        expectEquals ((int) drainRetired (chain).size(), ChainProcessor::kRetiredQueueCapacity);
+        runSine (chain, 20);
+        expectEquals (chain.getNumActiveSlots(), 16, "the waiting insert went in");
+
+        auto ids = drainRetired (chain);
+        std::sort (ids.begin(), ids.end());
+        std::vector<int> expected;
+        for (int id = 1; id <= 17; ++id)
+            expected.push_back (id);
+        expect (ids == expected, "slots 1..17 are retired, slot 33 is not");
+        expectLastBlockIs (chain, 1.0f, "16 unity gains pass the input through");
     }
 };
 

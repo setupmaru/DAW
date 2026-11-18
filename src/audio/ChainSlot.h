@@ -29,12 +29,11 @@ struct ChainSlot
     //==========================================================================
     // Audio-thread state below. Managed by ChainProcessor.
 
-    // Structural change waiting for this slot's wet to reach 0 (Remove /
-    // Move). While one is pending, the wet target is 0 regardless of
-    // `bypassed`.
+    // Structural change waiting for this slot's wet to reach 0: Remove (leave
+    // the chain) or Move (be re-placed to match the chain's logical order).
+    // While one is pending, the wet target is 0 regardless of `bypassed`.
     enum class PendingOp { None, Remove, Move };
     PendingOp pendingOp = PendingOp::None;
-    int pendingIndex = 0;   // destination index for PendingOp::Move
 
     // A slot with latency is placed in the chain at once but is not processed
     // (and its latency not counted) until the output dip has reached 0. Until

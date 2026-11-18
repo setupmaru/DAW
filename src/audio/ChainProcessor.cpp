@@ -186,11 +186,13 @@ bool ChainProcessor::applyCommand (const ChainCommand& cmd) noexcept
         return insertSlot (cmd.slot, cmd.index);
     }
 
-    const int index = findSlotIndex (cmd.slotId);
-    if (index < 0)
-        return true;   // unknown (or already removed) slot: nothing to do
+    // Commands address live slots only, as the message thread's model does: a
+    // slot fading out before removal is already gone from it.
+    const int live = findLiveIndex (cmd.slotId);
+    if (live < 0)
+        return true;   // unknown or already removed slot: nothing to do
 
-    auto& slot = *slots[(size_t) index];
+    auto& slot = *order[(size_t) live];
 
     switch (cmd.type)
     {
@@ -199,23 +201,21 @@ bool ChainProcessor::applyCommand (const ChainCommand& cmd) noexcept
             break;
 
         case ChainCommandType::Remove:
-            slot.pendingOp = ChainSlot::PendingOp::Remove;
+            for (int i = live; i < numLive - 1; ++i)
+                order[(size_t) i] = order[(size_t) (i + 1)];
+
+            order[(size_t) --numLive] = nullptr;
+            slot.pendingOp = ChainSlot::PendingOp::Remove;   // fades out, then leaves `slots`
             break;
 
         case ChainCommandType::Move:
         {
-            if (slot.pendingOp == ChainSlot::PendingOp::Remove)
-                break;   // being removed: the move no longer matters
-
-            if (juce::jlimit (0, numSlots - 1, cmd.index) == index)
-            {
-                // Already there: nothing to move (cancels an earlier pending move).
-                slot.pendingOp = ChainSlot::PendingOp::None;
-                break;
-            }
-
-            slot.pendingOp = ChainSlot::PendingOp::Move;
-            slot.pendingIndex = cmd.index;
+            // The logical order follows the command at once; the slot itself only
+            // fades out and moves if its place in `slots` is now wrong. (A Move to
+            // where it already is, or back before it got there, costs nothing.)
+            moveWithin (order.data(), live, juce::jlimit (0, numLive - 1, cmd.index));
+            slot.pendingOp = isInPlace (slot) ? ChainSlot::PendingOp::None
+                                              : ChainSlot::PendingOp::Move;
             break;
         }
 
@@ -232,20 +232,33 @@ bool ChainProcessor::insertSlot (ChainSlot* slot, int index) noexcept
     if (slot == nullptr)
         return true;
 
-    if (numSlots >= kMaxSlots)
+    if (numLive >= kMaxSlots)
     {
-        // Never write past the fixed array: hand the slot straight back so the
-        // message thread frees it. If the retired queue is full, report failure
-        // so the command is retried next block and the slot is not lost.
+        // 16 live slots already: hand the slot straight back so the message
+        // thread frees it. If the retired queue is full, report failure so the
+        // command is retried next block and the slot is not lost.
         return retired.push (slot);
     }
 
-    index = juce::jlimit (0, numSlots, index);
+    if (numSlots >= kMaxPhysicalSlots)
+        return false;   // too many slots still fading out: retry next block
 
-    for (int i = numSlots; i > index; --i)
+    index = juce::jlimit (0, numLive, index);
+
+    for (int i = numLive; i > index; --i)
+        order[(size_t) i] = order[(size_t) (i - 1)];
+
+    order[(size_t) index] = slot;
+    ++numLive;
+
+    // Physically, just before the next settled slot in the logical order.
+    auto* next = nextSettledAfter (index);
+    const int position = next != nullptr ? physicalIndexOf (next) : numSlots;
+
+    for (int i = numSlots; i > position; --i)
         slots[(size_t) i] = slots[(size_t) (i - 1)];
 
-    slots[(size_t) index] = slot;
+    slots[(size_t) position] = slot;
     ++numSlots;
 
     // Starts fully dry and fades towards its target, so inserting never clicks.
@@ -322,15 +335,14 @@ bool ChainProcessor::applyPendingChanges() noexcept
                 continue;
             }
 
-            const int to = juce::jlimit (0, numSlots - 1, slot.pendingIndex);
+            const int to = placeSlot (i);
             slot.pendingOp = ChainSlot::PendingOp::None;
-            moveSlot (i, to);
             retarget (slot);   // back to wet (or stays dry if bypassed)
 
             if (changesLatency)
                 noteLatencyChange (juce::jmin (i, to));
 
-            i = 0;   // indices shifted: rescan. Bounded, as every rescan clears one pending op.
+            i = 0;   // indices shifted: rescan. Bounded, as every rescan settles one slot.
             continue;
         }
 
@@ -388,18 +400,80 @@ int ChainProcessor::latencyFrom (int index) const noexcept
     return latency;
 }
 
-void ChainProcessor::moveSlot (int from, int to) noexcept
+//==============================================================================
+// Order. `order` is the logical chain: live slots in the order the message
+// thread's model has them, updated as soon as a command arrives. `slots` is the
+// physical chain that is processed: the live slots plus those fading out
+// before removal. A slot is "settled" when it is live and not waiting to move.
+//
+// Invariant: settled slots appear in `slots` in the same relative order as in
+// `order`. Insert keeps it by placing the new slot just before the next settled
+// slot in logical order (or at the end). A Move that breaks it only marks the
+// slot as unsettled; once the slot is dry (an exact pass-through, or silent
+// under the output dip), placeSlot() puts it back the same way. So when every
+// slot has settled, `slots` matches the model, whatever order the slots
+// happened to become dry in.
+
+int ChainProcessor::placeSlot (int from) noexcept
 {
     auto* slot = slots[(size_t) from];
 
-    if (from < to)
-        for (int i = from; i < to; ++i)
-            slots[(size_t) i] = slots[(size_t) (i + 1)];
-    else
-        for (int i = from; i > to; --i)
-            slots[(size_t) i] = slots[(size_t) (i - 1)];
+    for (int i = from; i < numSlots - 1; ++i)
+        slots[(size_t) i] = slots[(size_t) (i + 1)];
+
+    --numSlots;
+
+    auto* next = nextSettledAfter (logicalIndexOf (slot));
+    const int to = next != nullptr ? physicalIndexOf (next) : numSlots;
+
+    for (int i = numSlots; i > to; --i)
+        slots[(size_t) i] = slots[(size_t) (i - 1)];
 
     slots[(size_t) to] = slot;
+    ++numSlots;
+    return to;
+}
+
+bool ChainProcessor::isInPlace (const ChainSlot& slot) const noexcept
+{
+    const int logical = logicalIndexOf (&slot);
+    const int physical = physicalIndexOf (&slot);
+
+    for (int i = logical - 1; i >= 0; --i)
+    {
+        if (order[(size_t) i]->pendingOp == ChainSlot::PendingOp::None)
+        {
+            if (physicalIndexOf (order[(size_t) i]) > physical)
+                return false;
+            break;
+        }
+    }
+
+    auto* next = nextSettledAfter (logical);
+    return next == nullptr || physicalIndexOf (next) > physical;
+}
+
+ChainSlot* ChainProcessor::nextSettledAfter (int logicalIndex) const noexcept
+{
+    for (int i = logicalIndex + 1; i < numLive; ++i)
+        if (order[(size_t) i]->pendingOp == ChainSlot::PendingOp::None)
+            return order[(size_t) i];
+
+    return nullptr;
+}
+
+void ChainProcessor::moveWithin (ChainSlot** array, int from, int to) noexcept
+{
+    auto* slot = array[from];
+
+    if (from < to)
+        for (int i = from; i < to; ++i)
+            array[i] = array[i + 1];
+    else
+        for (int i = from; i > to; --i)
+            array[i] = array[i - 1];
+
+    array[to] = slot;
 }
 
 void ChainProcessor::retarget (ChainSlot& slot) noexcept
@@ -410,10 +484,28 @@ void ChainProcessor::retarget (ChainSlot& slot) noexcept
         slot.wet.setTargetValue (slot.targetWet());
 }
 
-int ChainProcessor::findSlotIndex (int slotId) const noexcept
+int ChainProcessor::findLiveIndex (int slotId) const noexcept
+{
+    for (int i = 0; i < numLive; ++i)
+        if (order[(size_t) i]->id == slotId)
+            return i;
+
+    return -1;
+}
+
+int ChainProcessor::logicalIndexOf (const ChainSlot* slot) const noexcept
+{
+    for (int i = 0; i < numLive; ++i)
+        if (order[(size_t) i] == slot)
+            return i;
+
+    return -1;
+}
+
+int ChainProcessor::physicalIndexOf (const ChainSlot* slot) const noexcept
 {
     for (int i = 0; i < numSlots; ++i)
-        if (slots[(size_t) i]->id == slotId)
+        if (slots[(size_t) i] == slot)
             return i;
 
     return -1;
@@ -491,5 +583,5 @@ void ChainProcessor::publishState() noexcept
             latency += slots[(size_t) i]->latencySamples;
 
     totalLatencySamples.store (latency, std::memory_order_relaxed);
-    numActiveSlots.store (numSlots, std::memory_order_relaxed);
+    numActiveSlots.store (numLive, std::memory_order_relaxed);
 }

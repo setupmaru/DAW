@@ -34,9 +34,13 @@ struct ChainCommand
 //    the change has passed through every latency slot behind it, then fades
 //    back in. Without this the delay length would jump (click) or the signal
 //    would drop out while a new delay line fills.
-//  - An Insert into a full chain (kMaxSlots) is handed straight back through
-//    popRetired(). If the retired queue is full, the slot waits in the chain
-//    (or the command waits) and is retried every block: no slot is ever lost.
+//  - Insert/Move indices are positions in the live chain, the slots not being
+//    removed, exactly as the message thread's model numbers them. Moves and
+//    inserts end in the model's order even while other slots are fading.
+//  - The kMaxSlots limit counts live slots. An Insert into a chain with
+//    kMaxSlots live slots is handed straight back through popRetired(). If the
+//    retired queue is full, or too many slots are still fading out, the slot
+//    (or the command) waits and is retried every block: no slot is ever lost.
 //
 // Threads: prepare/post/popRetired on the message thread, process on the audio
 // thread. process() and everything it calls never allocates, frees, locks or logs.
@@ -59,7 +63,7 @@ public:
     bool post (const ChainCommand&);                      // message thread; false when the queue is full
     ChainSlot* popRetired();                              // message thread; nullptr if none. Caller deletes
     int getTotalLatencySamples() const;
-    int getNumActiveSlots() const;
+    int getNumActiveSlots() const;                        // live slots (not being removed)
 
 private:
     void applyQueuedCommands() noexcept;
@@ -70,9 +74,14 @@ private:
     bool isDry (const ChainSlot&) const noexcept;
     bool outputIsDipped() const noexcept;
     int latencyFrom (int index) const noexcept;
-    void moveSlot (int from, int to) noexcept;
+    int placeSlot (int from) noexcept;
+    bool isInPlace (const ChainSlot&) const noexcept;
+    ChainSlot* nextSettledAfter (int logicalIndex) const noexcept;
+    static void moveWithin (ChainSlot** array, int from, int to) noexcept;
     void retarget (ChainSlot&) noexcept;
-    int findSlotIndex (int slotId) const noexcept;
+    int findLiveIndex (int slotId) const noexcept;
+    int logicalIndexOf (const ChainSlot*) const noexcept;
+    int physicalIndexOf (const ChainSlot*) const noexcept;
     void processSlot (ChainSlot& slot, juce::AudioBuffer<float>& stereo, int startSample, int numSamples) noexcept;
     void applyOutputGain (juce::AudioBuffer<float>& stereo) noexcept;
     void publishState() noexcept;
@@ -81,11 +90,18 @@ private:
     LockFreeQueue<ChainSlot*, kRetiredQueueCapacity> retired;
 
     // Audio-thread owned. Fixed size: no allocation when the chain changes.
-    std::array<ChainSlot*, kMaxSlots> slots {};
+    // `slots` is what is processed: live slots plus slots fading out before
+    // removal, hence the headroom. `order` is the live chain in model order;
+    // command indices and the kMaxSlots limit refer to it. See placeSlot().
+    static constexpr int kMaxPhysicalSlots = 2 * kMaxSlots;
+    std::array<ChainSlot*, kMaxPhysicalSlots> slots {};
     int numSlots = 0;
+    std::array<ChainSlot*, kMaxSlots> order {};
+    int numLive = 0;
 
     // A command that could not be applied yet (an Insert into a full chain
-    // while the retired queue is full). Retried first next block; later
+    // while the retired queue is full, or while `slots` is full of slots
+    // fading out). Retried first next block; later
     // commands wait behind it in the queue so their order is kept.
     ChainCommand deferredCommand { ChainCommandType::Insert };
     bool hasDeferredCommand = false;
