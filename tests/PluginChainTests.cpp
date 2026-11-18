@@ -21,6 +21,37 @@ public:
     }
 };
 
+// out = in + offset. Does not commute with a gain, so it shows the chain order.
+class OffsetProcessor : public TestProcessorBase
+{
+public:
+    explicit OffsetProcessor (float o) : offset (o) {}
+
+    using TestProcessorBase::processBlock;
+
+    void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+    {
+        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+            juce::FloatVectorOperations::add (buffer.getWritePointer (ch), offset, buffer.getNumSamples());
+    }
+
+private:
+    float offset;
+};
+
+// Runs one block of constant `input` (both channels) and returns the left
+// channel's last output sample.
+float runConstant (ChainProcessor& chain, float input)
+{
+    juce::AudioBuffer<float> buffer (2, kBlock);
+    buffer.clear();
+    for (int ch = 0; ch < 2; ++ch)
+        juce::FloatVectorOperations::fill (buffer.getWritePointer (ch), input, kBlock);
+
+    chain.process (buffer);
+    return buffer.getSample (0, kBlock - 1);
+}
+
 juce::String utf8 (const char* text)
 {
     return juce::String (juce::CharPointer_UTF8 (text));
@@ -77,6 +108,9 @@ struct PluginChainTests : public juce::UnitTest
     void runTest() override
     {
         testAddRemoveMoveUpdatesModel();
+        testMoveChangesAudioOrder();
+        testAddPluginFailureReportsError();
+        testAddPluginCompletingAfterDestructionIsIgnored();
         testRejectsProcessorWithoutStereoLayout();
         testRejectsSeventeenthEntry();
         testPostFailureLeavesModelUnchanged();
@@ -131,6 +165,69 @@ struct PluginChainTests : public juce::UnitTest
         expectEquals (f.chain.getNumActiveSlots(), 1);
         expectEquals ((int) f.model->getEntries().size(), 1);
         expect (f.errors.isEmpty(), "no errors on the normal path");
+    }
+
+    void testMoveChangesAudioOrder()
+    {
+        beginTest ("the audio order follows the model after move");
+
+        Fixture f;
+        expect (f.model->addProcessor (std::make_unique<GainProcessor> (0.5f), "Gain"));
+        expect (f.model->addProcessor (std::make_unique<OffsetProcessor> (0.25f), "Offset"));
+        runBlocks (f.chain, kSettleBlocks);
+
+        // Gain then Offset: 0.5 * 1 + 0.25
+        expectWithinAbsoluteError (runConstant (f.chain, 1.0f), 0.75f, 1.0e-5f, "Gain -> Offset");
+
+        expect (f.model->move (f.model->getEntries()[1].id, 0));
+        expect (namesOf (*f.model) == std::vector<juce::String> { "Offset", "Gain" });
+
+        for (int i = 0; i < kSettleBlocks; ++i)
+            runConstant (f.chain, 1.0f);
+
+        // Offset then Gain: 0.5 * (1 + 0.25)
+        expectWithinAbsoluteError (runConstant (f.chain, 1.0f), 0.625f, 1.0e-5f, "Offset -> Gain");
+    }
+
+    static juce::PluginDescription unknownPlugin()
+    {
+        juce::PluginDescription desc;
+        desc.name = "Missing";
+        desc.pluginFormatName = "NoSuchFormat";
+        desc.fileOrIdentifier = "/nowhere/Missing.vst3";
+        return desc;
+    }
+
+    void testAddPluginFailureReportsError()
+    {
+        beginTest ("addPlugin reports a creation failure and leaves the model unchanged");
+
+        Fixture f;
+        f.model->addPlugin (unknownPlugin());
+        expect (f.errors.isEmpty(), "the failure is reported asynchronously");
+
+        expect (pumpMessagesUntil ([&f] { return ! f.errors.isEmpty(); }), "onError is called");
+        expectEquals (f.errors.size(), 1);
+        expect (f.errors[0].startsWith (utf8 ("플러그인을 불러오지 못했습니다: ") + "Missing"), f.errors[0]);
+        expect (f.model->getEntries().empty(), "no entry");
+        expectEquals (f.changes, 0);
+
+        runBlocks (f.chain, kSettleBlocks);
+        expectEquals (f.chain.getNumActiveSlots(), 0);
+    }
+
+    void testAddPluginCompletingAfterDestructionIsIgnored()
+    {
+        beginTest ("addPlugin completing after the model is destroyed is ignored");
+
+        Fixture f;
+        bool called = false;
+        f.model->onError = [&called] (const juce::String&) { called = true; };
+        f.model->addPlugin (unknownPlugin());
+        f.model.reset();
+
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
+        expect (! called, "no callback into a destroyed model");
     }
 
     void testRejectsProcessorWithoutStereoLayout()

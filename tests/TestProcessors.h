@@ -10,6 +10,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <vector>
@@ -234,3 +235,17 @@ inline float maxStep (const std::vector<float>& samples)
 
     return result;
 }
+
+#if JUCE_MODAL_LOOPS_PERMITTED
+// Dispatches messages (async callbacks, timers) on the calling message thread
+// until `done` returns true or timeoutMs elapses. Returns done().
+inline bool pumpMessagesUntil (const std::function<bool()>& done, int timeoutMs = 5000)
+{
+    const auto end = juce::Time::getMillisecondCounter() + (juce::uint32) timeoutMs;
+
+    while (! done() && juce::Time::getMillisecondCounter() < end)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+    return done();
+}
+#endif

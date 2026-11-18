@@ -2,9 +2,8 @@
 
 namespace
 {
-// How long the destructor waits for the plugin being scanned to return before
-// the thread is forcibly stopped.
-constexpr int kStopTimeoutMs = 10000;
+// Pause between two plugin files, so queued UI messages run in between.
+constexpr int kScanIntervalMs = 10;
 
 juce::AudioPluginFormat* findVst3Format (juce::AudioPluginFormatManager& formats)
 {
@@ -17,53 +16,6 @@ juce::AudioPluginFormat* findVst3Format (juce::AudioPluginFormatManager& formats
 } // namespace
 
 //==============================================================================
-class PluginScanner::ScanThread : public juce::Thread
-{
-public:
-    ScanThread (PluginScanner& o, juce::AudioPluginFormat& f, juce::FileSearchPath p,
-                juce::WeakReference<PluginScanner> w, std::function<void()> done)
-        : juce::Thread ("VST3 scan"), owner (o), format (f), paths (std::move (p)),
-          weakOwner (std::move (w)), onFinished (std::move (done))
-    {
-    }
-
-    void run() override
-    {
-        {
-            // The last argument only matters for formats that need asynchronous
-            // instantiation (AU); VST3 ignores it.
-            juce::PluginDirectoryScanner scanner (owner.knownPlugins, format, paths, true,
-                                                  owner.getPedalFile(), true);
-            juce::String pluginBeingScanned;
-
-            while (! threadShouldExit() && scanner.scanNextFile (true, pluginBeingScanned))
-            {
-            }
-        }
-
-        if (threadShouldExit())
-            return;   // the owner is being destroyed
-
-        owner.saveCache();
-
-        // The owner may be destroyed before this message is delivered: the weak
-        // reference (created on the message thread) is checked there.
-        juce::MessageManager::callAsync ([weak = weakOwner, done = std::move (onFinished)]() mutable
-        {
-            if (auto* self = weak.get())
-                self->scanFinished (std::move (done));
-        });
-    }
-
-private:
-    PluginScanner& owner;
-    juce::AudioPluginFormat& format;
-    const juce::FileSearchPath paths;
-    juce::WeakReference<PluginScanner> weakOwner;
-    std::function<void()> onFinished;
-};
-
-//==============================================================================
 PluginScanner::PluginScanner (juce::AudioPluginFormatManager& formats, juce::File cache)
     : formatManager (formats), cacheFile (std::move (cache))
 {
@@ -71,8 +23,9 @@ PluginScanner::PluginScanner (juce::AudioPluginFormatManager& formats, juce::Fil
 
 PluginScanner::~PluginScanner()
 {
-    if (scanThread != nullptr)
-        scanThread->stopThread (kStopTimeoutMs);
+    JUCE_ASSERT_MESSAGE_THREAD
+    stopTimer();
+    directoryScanner.reset();   // before knownPlugins, which it refers to
 }
 
 juce::File PluginScanner::defaultCacheFile()
@@ -89,6 +42,7 @@ juce::File PluginScanner::getPedalFile() const
 
 void PluginScanner::loadCache()
 {
+    JUCE_ASSERT_MESSAGE_THREAD
     jassert (! isScanning());
 
     knownPlugins.clear();
@@ -103,48 +57,58 @@ void PluginScanner::loadCache()
 
 void PluginScanner::startScan (std::function<void()> onFinished)
 {
-    if (isScanning())
-        return;
+    JUCE_ASSERT_MESSAGE_THREAD
 
-    auto* format = findVst3Format (formatManager);
+    if (onFinished)
+        pendingCallbacks.push_back (std::move (onFinished));
 
-    if (format == nullptr)
-    {
-        juce::MessageManager::callAsync ([weak = juce::WeakReference<PluginScanner> (this),
-                                          done = std::move (onFinished)]() mutable
-        {
-            if (weak.get() != nullptr && done)
-                done();
-        });
-        return;
-    }
-
-    // A previous scan thread has finished its work (scanning is false) but may
-    // still be returning from run(): join it before deleting it.
-    if (scanThread != nullptr)
-        scanThread->stopThread (-1);
-
-    scanThread.reset();
-
-    // Read on the message thread; the scan thread only gets a copy.
-    auto paths = format->getDefaultLocationsToSearch();
-    cacheFile.getParentDirectory().createDirectory();
+    if (scanning)
+        return;   // the callback runs when the current scan finishes
 
     scanning = true;
-    scanThread = std::make_unique<ScanThread> (*this, *format, paths,
-                                               juce::WeakReference<PluginScanner> (this),
-                                               std::move (onFinished));
-    scanThread->startThread();
+    cacheFile.getParentDirectory().createDirectory();
+
+    // Without a VST3 format there is nothing to scan; the first tick finishes.
+    if (auto* format = findVst3Format (formatManager))
+        directoryScanner = std::make_unique<juce::PluginDirectoryScanner> (
+            knownPlugins, *format, format->getDefaultLocationsToSearch(), true, getPedalFile());
+
+    startTimer (kScanIntervalMs);
 }
 
 bool PluginScanner::isScanning() const
 {
-    return scanning.load();
+    return scanning;
 }
 
 juce::KnownPluginList& PluginScanner::getKnownPlugins()
 {
     return knownPlugins;
+}
+
+void PluginScanner::timerCallback()
+{
+    juce::String pluginBeingScanned;
+
+    // One file per tick. scanNextFile returns false once no file is left.
+    if (directoryScanner == nullptr || ! directoryScanner->scanNextFile (true, pluginBeingScanned))
+        finishScan();
+}
+
+void PluginScanner::finishScan()
+{
+    stopTimer();
+    directoryScanner.reset();
+    saveCache();
+    scanning = false;
+
+    // Take the callbacks out first: one may start a new scan (queueing its own
+    // callback) or destroy this object, so members are not touched afterwards.
+    auto callbacks = std::move (pendingCallbacks);
+    pendingCallbacks.clear();
+
+    for (auto& callback : callbacks)
+        callback();
 }
 
 void PluginScanner::saveCache()
@@ -154,12 +118,4 @@ void PluginScanner::saveCache()
         cacheFile.getParentDirectory().createDirectory();
         xml->writeTo (cacheFile);
     }
-}
-
-void PluginScanner::scanFinished (std::function<void()> onFinished)
-{
-    scanning = false;
-
-    if (onFinished)
-        onFinished();
 }

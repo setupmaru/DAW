@@ -42,6 +42,10 @@ set(DAW_TEST_SOURCES
     tests/ChainProcessorTests.cpp
     tests/AudioEngineTests.cpp
     tests/PluginChainTests.cpp
+    tests/PluginScannerTests.cpp
+    # App-only, also compiled here so its queueing logic can be tested
+    # without VST3 plugins (an empty format manager).
+    src/plugins/PluginScanner.cpp
 )
 
 # --- Shared settings -------------------------------------------------------
@@ -89,4 +93,6 @@ daw_configure_target(DAW)
 juce_add_console_app(DAWTests PRODUCT_NAME "DAWTests")
 target_sources(DAWTests PRIVATE ${DAW_CORE_SOURCES} ${DAW_TEST_SOURCES})
 daw_configure_target(DAWTests)
+# Tests pump the message loop with MessageManager::runDispatchLoopUntil().
+target_compile_definitions(DAWTests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)
 add_test(NAME DAWTests COMMAND DAWTests)
