@@ -213,31 +213,34 @@ const std::vector<ChainEntry>& PluginChain::getEntries() const
 void PluginChain::pumpRetired()
 {
     JUCE_ASSERT_MESSAGE_THREAD
-    bool modelChanged = false;
+    std::vector<std::unique_ptr<ChainSlot>> toDelete;
     juce::StringArray dropped;
 
     while (auto* raw = chain.popRetired())
     {
-        std::unique_ptr<ChainSlot> slot (raw);
-        const int index = indexOf (slot->id);
+        toDelete.emplace_back (raw);
+        const int index = indexOf (raw->id);
 
         // Defensive: the audio side only retires an Insert the model should
-        // never have made (a full chain). Drop the entry before its processor
-        // is deleted so no dangling pointer stays in the model.
+        // never have made (a full chain). Drop the entry so no pointer to a
+        // deleted processor stays in the model.
         if (index >= 0)
         {
             dropped.add (entries[(size_t) index].name);
             entries.erase (entries.begin() + index);
-            modelChanged = true;
         }
     }
 
-    // Callbacks only after the queue is drained and the model is consistent.
-    if (modelChanged)
+    // Announce the dropped entries while their processors still exist, so the
+    // UI can close their editors first (an editor must not outlive its
+    // processor). The slots are deleted when toDelete goes out of scope.
+    if (! dropped.isEmpty())
+    {
         changed();
 
-    for (const auto& name : dropped)
-        error (utf8 ("오디오 엔진이 체인에 넣지 못해 플러그인을 제거했습니다: ") + name);
+        for (const auto& name : dropped)
+            error (utf8 ("오디오 엔진이 체인에 넣지 못해 플러그인을 제거했습니다: ") + name);
+    }
 }
 
 void PluginChain::timerCallback()

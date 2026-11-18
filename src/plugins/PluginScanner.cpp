@@ -48,7 +48,7 @@ public:
 
         // The owner may be destroyed before this message is delivered: the weak
         // reference (created on the message thread) is checked there.
-        juce::MessageManager::callAsync ([weak = weakOwner, done = onFinished]() mutable
+        juce::MessageManager::callAsync ([weak = weakOwner, done = std::move (onFinished)]() mutable
         {
             if (auto* self = weak.get())
                 self->scanFinished (std::move (done));

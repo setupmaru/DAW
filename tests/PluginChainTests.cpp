@@ -287,8 +287,18 @@ struct PluginChainTests : public juce::UnitTest
         expectEquals ((int) f.model->getEntries().size(), 1);
         const int changesBefore = f.changes;
 
+        // The UI closes editors in onChanged, so it must run while the
+        // processor still exists.
+        int destroyedWhenChanged = -1;
+        f.model->onChanged = [&f, &destroyedWhenChanged]
+        {
+            ++f.changes;
+            destroyedWhenChanged = CountingProcessor::destroyed();
+        };
+
         runBlocks (f.chain, kSettleBlocks);   // the audio side hands the insert back
         f.model->pumpRetired();
+        expectEquals (destroyedWhenChanged, 0, "onChanged runs before the processor is deleted");
 
         expect (f.model->getEntries().empty(), "the entry is dropped");
         expectEquals (f.errors.size(), 1);
