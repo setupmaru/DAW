@@ -22,6 +22,7 @@ enable_testing()
 # Core sources: compiled into BOTH DAW and DAWTests (no static lib, to avoid
 # linking JUCE modules twice).
 set(DAW_CORE_SOURCES
+    src/audio/ChainProcessor.cpp
     # src/audio/...
     # src/plugins/PluginChain.cpp
 )
@@ -37,6 +38,7 @@ set(DAW_APP_SOURCES
 set(DAW_TEST_SOURCES
     tests/TestMain.cpp
     tests/SmokeTest.cpp
+    tests/ChainProcessorTests.cpp
 )
 
 # --- Shared settings -------------------------------------------------------
