@@ -11,6 +11,10 @@ struct PluginScannerTests : public juce::UnitTest
 
     void runTest() override
     {
+        // expect() needs a current test: JUCE crashes on an expect before the
+        // first beginTest when this suite runs first.
+        beginTest ("a temporary cache directory can be created");
+
         const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory)
                              .getNonexistentChildFile ("DAWScannerTest", "");
         expect (dir.createDirectory().wasOk());

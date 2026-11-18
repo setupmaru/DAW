@@ -15,5 +15,9 @@ int main()
         if (auto* result = runner.getResult (i))
             failures += result->failures;
 
+    // No results means no test ran at all, which must not pass silently.
+    if (runner.getNumResults() == 0)
+        return 1;
+
     return failures > 0 ? 1 : 0;
 }

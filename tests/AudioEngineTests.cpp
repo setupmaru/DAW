@@ -14,6 +14,8 @@ struct AudioEngineTests : public juce::UnitTest
 
     void runTest() override
     {
+        // The engine copies samples unchanged, so exact float comparison is
+        // intended here (juce::exactlyEqual avoids -Wfloat-equal).
         beginTest ("mono input is copied to both outputs");
         {
             AudioEngine engine;
@@ -29,7 +31,8 @@ struct AudioEngineTests : public juce::UnitTest
 
             bool same = true;
             for (int i = 0; i < kBlock; ++i)
-                same = same && out.getSample (0, i) == in.getSample (1, i) && out.getSample (1, i) == in.getSample (1, i);
+                same = same && juce::exactlyEqual (out.getSample (0, i), in.getSample (1, i))
+                            && juce::exactlyEqual (out.getSample (1, i), in.getSample (1, i));
             expect (same, "L == R == input channel 1");
         }
 
@@ -76,7 +79,7 @@ struct AudioEngineTests : public juce::UnitTest
             run (engine, in, out);
             bool same = true;
             for (int i = 0; i < 200; ++i)
-                same = same && out.getSample (1, i) == in.getSample (0, i);
+                same = same && juce::exactlyEqual (out.getSample (1, i), in.getSample (0, i));
             expect (same, "all 200 samples passed through");
         }
 
