@@ -1,0 +1,60 @@
+# 다음 단계 후보 목록 (뼈대 작업 리뷰에서 넘어온 항목)
+
+뼈대 구현(2026-11-18~19) 과정의 코드 리뷰에서 "다음 단계로 미룸"으로 분류된 항목입니다. 원문(영어) 그대로 둡니다.
+
+## 리뷰에서 미룬 작은 문제들
+- Task 1: minor (deferred): CI cache key uses env JUCE_TAG while CMake hardcodes tag — can drift.
+- Task 1: minor (deferred): caching build/_deps also caches juce-build artifacts.
+- Task 1: minor (deferred): test runner exits 0 when zero tests run.
+- Task 1: minor (deferred): SmokeTest in separate file; .superpowers/ in .gitignore (fine).
+- Task 1: minor (deferred): /utf-8 genex matches MSVC only, not clang-cl.
+- Task 2: minor (deferred): mono plugin only affects L (T5 enforces stereo layout).
+- Task 2: minor (deferred): MIDI buffer fixed 2048 bytes; could realloc on audio thread for MIDI-heavy plugins.
+- Task 2: minor (deferred): suspendProcessing()/isSuspended() not honoured.
+- Task 2: minor (deferred): test position map static, never cleared.
+- Task 3: minor (deferred): prepare() is the queue consumer during re-prepare — T4 must call it only on message thread with no concurrent post().
+- Task 3: minor (deferred): re-prepare restarts output hard after total latency (device restart; small).
+- Task 3: minor (deferred): process() returns early for <2 channels, freezing fades (AudioEngine always passes 2).
+- Task 3: minor (deferred): deferred full-chain Insert blocks later commands until retired drains.
+- Task 3: minor (deferred): interleaving test gaps (SetBypass during Move, Move during Remove, Remove while fading in / awaitingDip, overlapping latency changes, unknown ids).
+- Task 3: minor (deferred): SetBypass on a removing slot is ignored (T5 must not expect it).
+- Task 4: minor (deferred): no test proves chain.process is called / metering order around chain (all tests use empty chain).
+- Task 4: minor (deferred): AudioDeviceManager member makes tests log ALSA seq error + JUCE MIDI jassert (Debug).
+- Task 4: minor (deferred): out-of-range test checks ch0 only; negative/0-input/unprepared paths untested.
+- Task 4: minor (deferred): header thread contract — prepareForTest only while no callback registered; aboutToStart may come from a driver thread on some backends → race with message-thread post() — final review should weigh.
+- Task 4: minor (deferred): block size 0 → 1-sample chunks; no ScopedNoDenormals.
+- Task 5: minor (deferred): stereo layout no fallback (disable aux buses on retry); instruments get "no stereo" msg.
+- Task 5: minor (deferred): cache written only after full scan.
+- Task 5: minor (deferred): failed scan files not surfaced.
+- Task 5: minor (deferred): onError spam on full queue — UI should rate-limit.
+- Task 5: minor (deferred): defensive ghost path index skew (only if model bypassed).
+- Task 5: minor (deferred): loadCache during scan guarded only by jassert.
+- Task 5: minor (deferred): hanging plugin freezes UI during scan (accepted ruling).
+- Task 4: minor (deferred): -Wfloat-equal warnings in tests/AudioEngineTests.cpp (test output not pristine).
+- Task 6: minor (deferred): plugin added during async spec-sync gap prepared at old SR — fix: PluginChain reads ChainProcessor prepared SR/block getters.
+- Task 6: minor (deferred): notice strip appearing/disappearing shifts rows (mis-click risk).
+- Task 6: minor (deferred): specific engine error replaced by generic hint after a timed notice.
+- Task 6: minor (deferred): selector allows multiple inputs; engine uses first — set maxAudioInputChannels=1 (matches global constraint "선택한 입력 채널 1개").
+- Task 6: minor (deferred): "Not modal" comment wrong for launchAsync; bypass button tooltip; redundant repaint.
+
+## 최종 리뷰에서 다음 단계로 분류된 항목
+- With no audio device open, the command queue is never drained; after 64 edits every click shows "잠시 후 다시 시도하세요".
+- Plugins that change latency at runtime are not tracked (dry path misaligns, total latency stale) — needs audioProcessorChanged listener + re-prepare.
+- Mic goes straight to output at launch (README warns to use headphones); monitoring policy is an open question (design.md §7).
+- JUCE silently falls back to default devices when the interface is unplugged — show a notice when the device name changes.
+- "다시 스캔" never removes uninstalled plugins; saveCache ignores write failure.
+
+## 내린 결정 (되돌릴 수 있음)
+- Ruling: git repo already initialised on `main` by controller; T1 skips `git init` — needed for SDD workspace — cost if wrong: none.
+- Ruling: LockFreeQueue must hold exactly `Capacity` items (allocate Capacity+1 in AbstractFifo) — T5 test relies on 64 — cost: off-by-one in test.
+- Ruling: PluginScanner.cpp and PluginEditorWindow.cpp are app-only sources (not DAW_CORE_SOURCES) — scanner has no unit test — cost: none.
+- 2026-11-19: controller session was interrupted during Task 1; implementer resumed. Build thrashed (7 GB RAM, -j8). Ruling: all builds use `-j2` on this machine — JUCE TUs ~1 GB each — cost if wrong: slower builds only.
+- Ruling: add MSVC `/utf-8` in daw_configure_target now (reviewer minor #5) — Tasks 5–6 add Korean literals and Windows CI must compile them correctly — cost if wrong: one compile flag.
+- Ruling: T3 makes click detection phase-independent and proves by mutation that a hard switch fails by a wide margin — current margin 0.071 vs 0.06 is too thin to trust — cost: test-only change.
+- Ruling: Insert honours cmd.bypassed (sets slot->bypassed) — avoids silent mismatch for PluginChain in T5 — cost: one line.
+- Ruling: silent hold of (affected latency) during latency-change dip accepted — spec requires no click; outputting an empty delay line would be a dropout click anyway — cost if wrong: longer gap (~latency) on air when adding/removing high-latency plugins; revisit in next phase.
+- Ruling (Important 2, plan-mandated): live limit kMaxSlots counts only slots not pending Remove; physical slot array gets headroom 2*kMaxSlots; if physically full the Insert stays deferred (retry next block), never retired while model shows room — spec: model and audio must agree; retiring a slot the model still lists is a UAF — cost: 16 extra pointers.
+- Ruling: T5 PluginChain must also defensively drop any model entry whose slot comes back via popRetired before the model removed it (onError) — cost: few lines in T5.
+- Ruling (Important 1, plan-mandated): scan incrementally on the message thread via juce::Timer (one file per tick; JUCE PluginListComponent default) instead of a background thread — spec intent "UI가 멈추지 않도록" kept (UI hitches only while one slow plugin is scanned), race eliminated; spec literal "백그라운드" relaxed — cost if wrong: brief UI hitch per slow plugin during rescans; audio thread unaffected.
+- Ruling: final fix wave = Critical + 2 Important + runner fails on zero tests + ScopedNoDenormals + -Wfloat-equal test warnings + README (headphones warning, exe path, Windows prereqs, checklist additions) + .gitignore (.vs/, out/, CMakeUserPresets.json) + launchAsync comment + filter instruments from add menu; all other minors next phase — cheap, user-facing on air or required for pristine Release CI — cost: none significant.
+- Ruling (plan defect): verify both Debug and Release ctest from now on — Release+LTO exposed a test-ordering bug Debug hid.
