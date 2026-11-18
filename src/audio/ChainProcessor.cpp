@@ -1,5 +1,7 @@
 #include "ChainProcessor.h"
 
+#include <vector>
+
 //==============================================================================
 void ChainSlot::prepare (double sampleRate, int maxBlockSize)
 {
@@ -39,6 +41,9 @@ ChainProcessor::~ChainProcessor()
     for (int i = 0; i < numSlots; ++i)
         delete slots[(size_t) i];
 
+    if (hasDeferredCommand && deferredCommand.type == ChainCommandType::Insert)
+        delete deferredCommand.slot;
+
     ChainCommand cmd { ChainCommandType::Insert };
     while (commands.pop (cmd))
         if (cmd.type == ChainCommandType::Insert)
@@ -56,8 +61,43 @@ void ChainProcessor::prepare (double sampleRate, int maxBlockSize)
     preparedSampleRate = sampleRate;
     preparedBlockSize = maxBlockSize;
 
-    // TODO(Task 3): re-prepare every slot the chain owns (slot->prepare) so a
-    // device change keeps the chain.
+    // Re-prepare every slot the chain owns, so a device change keeps the chain.
+    // Audio is stopped, so no fades are needed: each slot jumps to its target
+    // wet, and a slot that was waiting for the output dip simply joins.
+    for (int i = 0; i < numSlots; ++i)
+    {
+        auto& slot = *slots[(size_t) i];
+        slot.prepare (sampleRate, maxBlockSize);
+        slot.awaitingDip = false;
+    }
+
+    // Slots still on their way in were prepared for the old device. Audio is
+    // stopped, so this (message) thread may also act as the queue's consumer:
+    // take every command out, re-prepare its slot, and put it back in order.
+    if (hasDeferredCommand && deferredCommand.slot != nullptr)
+        deferredCommand.slot->prepare (sampleRate, maxBlockSize);
+
+    std::vector<ChainCommand> queued;
+    queued.reserve ((size_t) commands.getNumReady());
+
+    ChainCommand cmd { ChainCommandType::Insert };
+    while (commands.pop (cmd))
+        queued.push_back (cmd);
+
+    for (const auto& c : queued)
+    {
+        if (c.type == ChainCommandType::Insert && c.slot != nullptr)
+            c.slot->prepare (sampleRate, maxBlockSize);
+
+        const bool pushed = commands.push (c);   // same count as just popped: cannot fail
+        jassertquiet (pushed);
+    }
+
+    outputGain.reset (sampleRate, kOutputDipSeconds);
+    outputGain.setCurrentAndTargetValue (1.0f);
+    dipHoldSamples = 0;
+
+    publishState();
 }
 
 bool ChainProcessor::post (const ChainCommand& cmd)
@@ -84,17 +124,18 @@ int ChainProcessor::getNumActiveSlots() const
 //==============================================================================
 void ChainProcessor::process (juce::AudioBuffer<float>& stereo)
 {
-    // ① Apply every queued command.
-    ChainCommand cmd { ChainCommandType::Insert };
-    while (commands.pop (cmd))
-        applyCommand (cmd);
+    // ① Take in queued commands. ② Apply the structural changes that are ready
+    // (their slot is dry and, if they change latency, the output is dipped).
+    applyQueuedCommands();
+    const bool wantDip = applyPendingChanges();
+    outputGain.setTargetValue (wantDip ? 0.0f : 1.0f);
 
     publishState();
 
-    if (numSlots == 0 || stereo.getNumChannels() < 2)
+    if (stereo.getNumChannels() < 2)
         return;
 
-    // ② Run the slots in order. A block larger than a slot was prepared for is
+    // ③ Run the slots in order. A block larger than a slot was prepared for is
     // split, so the slot's preallocated buffers are always big enough.
     const int totalSamples = stereo.getNumSamples();
 
@@ -102,56 +143,101 @@ void ChainProcessor::process (juce::AudioBuffer<float>& stereo)
     {
         auto& slot = *slots[(size_t) i];
 
-        if (slot.preparedBlockSize <= 0)
-            continue;   // never prepared: leave the signal untouched
+        if (slot.preparedBlockSize <= 0 || slot.awaitingDip)
+            continue;   // never prepared, or not in the signal path yet: leave the signal untouched
 
         for (int start = 0; start < totalSamples; start += slot.preparedBlockSize)
             processSlot (slot, stereo, start, juce::jmin (slot.preparedBlockSize, totalSamples - start));
     }
+
+    // ④ Output dip.
+    applyOutputGain (stereo);
 }
 
-void ChainProcessor::applyCommand (const ChainCommand& cmd) noexcept
+void ChainProcessor::applyQueuedCommands() noexcept
 {
-    switch (cmd.type)
+    if (hasDeferredCommand)
     {
-        case ChainCommandType::Insert:
-            insertSlot (cmd.slot, cmd.index);
-            break;
+        if (! applyCommand (deferredCommand))
+            return;   // still stuck: later commands keep waiting in the queue
 
-        case ChainCommandType::SetBypass:
+        hasDeferredCommand = false;
+    }
+
+    ChainCommand cmd { ChainCommandType::Insert };
+    while (commands.pop (cmd))
+    {
+        if (! applyCommand (cmd))
         {
-            const int index = findSlotIndex (cmd.slotId);
-            if (index < 0)
-                break;
-
-            auto& slot = *slots[(size_t) index];
-            slot.bypassed = cmd.bypassed;
-            slot.wet.setTargetValue (slot.targetWet());
-            break;
+            deferredCommand = cmd;
+            hasDeferredCommand = true;
+            return;
         }
-
-        case ChainCommandType::Remove:
-        case ChainCommandType::Move:
-            // TODO(Task 3): set slot.pendingOp (and pendingIndex for Move), then
-            // set slot.wet's target to slot.targetWet() (= 0). Once wet reaches 0,
-            // apply the structural change (Remove -> push to `retired`, Move ->
-            // reorder) and clear pendingOp. Ignored for now.
-            break;
     }
 }
 
-void ChainProcessor::insertSlot (ChainSlot* slot, int index) noexcept
+bool ChainProcessor::applyCommand (const ChainCommand& cmd) noexcept
+{
+    if (cmd.type == ChainCommandType::Insert)
+    {
+        if (cmd.slot != nullptr)
+            cmd.slot->bypassed = cmd.bypassed;
+
+        return insertSlot (cmd.slot, cmd.index);
+    }
+
+    const int index = findSlotIndex (cmd.slotId);
+    if (index < 0)
+        return true;   // unknown (or already removed) slot: nothing to do
+
+    auto& slot = *slots[(size_t) index];
+
+    switch (cmd.type)
+    {
+        case ChainCommandType::SetBypass:
+            slot.bypassed = cmd.bypassed;
+            break;
+
+        case ChainCommandType::Remove:
+            slot.pendingOp = ChainSlot::PendingOp::Remove;
+            break;
+
+        case ChainCommandType::Move:
+        {
+            if (slot.pendingOp == ChainSlot::PendingOp::Remove)
+                break;   // being removed: the move no longer matters
+
+            if (juce::jlimit (0, numSlots - 1, cmd.index) == index)
+            {
+                // Already there: nothing to move (cancels an earlier pending move).
+                slot.pendingOp = ChainSlot::PendingOp::None;
+                break;
+            }
+
+            slot.pendingOp = ChainSlot::PendingOp::Move;
+            slot.pendingIndex = cmd.index;
+            break;
+        }
+
+        case ChainCommandType::Insert:
+            break;   // handled above
+    }
+
+    retarget (slot);   // a pending op forces the target to 0 (ChainSlot::targetWet)
+    return true;
+}
+
+bool ChainProcessor::insertSlot (ChainSlot* slot, int index) noexcept
 {
     if (slot == nullptr)
-        return;
+        return true;
 
     if (numSlots >= kMaxSlots)
     {
-        // Never write past the fixed array. Hand the slot straight back so the
-        // message thread frees it. TODO(Task 3): retry next block if `retired`
-        // is full instead of dropping it.
-        retired.push (slot);
-        return;
+        // Never write past the fixed array: hand the slot straight back so the
+        // message thread frees it. If the retired queue is full, report failure
+        // so the command is retried next block and the slot is not lost.
+        return retired.push (slot);
     }
 
     index = juce::jlimit (0, numSlots, index);
@@ -163,9 +249,165 @@ void ChainProcessor::insertSlot (ChainSlot* slot, int index) noexcept
     ++numSlots;
 
     // Starts fully dry and fades towards its target, so inserting never clicks.
+    // A slot with latency would also change the delay of the signal path, so it
+    // waits outside the signal path until the output has dipped to 0.
     slot->pendingOp = ChainSlot::PendingOp::None;
+    slot->awaitingDip = slot->latencySamples > 0;
     slot->wet.setCurrentAndTargetValue (0.0f);
-    slot->wet.setTargetValue (slot->targetWet());
+    retarget (*slot);
+    return true;
+}
+
+bool ChainProcessor::applyPendingChanges() noexcept
+{
+    const bool dipped = outputIsDipped();
+    bool wantDip = false;
+
+    // Lowest index from which the signal path's delay changed at gain 0.
+    bool latencyChanged = false;
+    int changedFrom = 0;
+
+    auto noteLatencyChange = [&] (int index)
+    {
+        changedFrom = latencyChanged ? juce::jmin (changedFrom, index) : index;
+        latencyChanged = true;
+    };
+
+    for (int i = 0; i < numSlots;)
+    {
+        auto& slot = *slots[(size_t) i];
+
+        // Removing or moving a slot that is in the signal path with latency
+        // changes the delay at and after its position.
+        const bool changesLatency = ! slot.awaitingDip && slot.latencySamples > 0;
+
+        if (slot.pendingOp == ChainSlot::PendingOp::Remove)
+        {
+            // Wait (in the chain, dry, without dipping) until the retired queue
+            // has room, so the slot is never lost.
+            if (! retiredHasRoom())
+            {
+                ++i;
+                continue;
+            }
+
+            if (changesLatency)
+                wantDip = true;
+
+            if (! isDry (slot) || (changesLatency && ! dipped) || ! retired.push (&slot))
+            {
+                ++i;
+                continue;
+            }
+
+            for (int j = i; j < numSlots - 1; ++j)
+                slots[(size_t) j] = slots[(size_t) (j + 1)];
+
+            slots[(size_t) --numSlots] = nullptr;
+
+            if (changesLatency)
+                noteLatencyChange (i);
+
+            continue;   // slots[i] is now the next slot
+        }
+
+        if (slot.pendingOp == ChainSlot::PendingOp::Move)
+        {
+            if (changesLatency)
+                wantDip = true;
+
+            if (! isDry (slot) || (changesLatency && ! dipped))
+            {
+                ++i;
+                continue;
+            }
+
+            const int to = juce::jlimit (0, numSlots - 1, slot.pendingIndex);
+            slot.pendingOp = ChainSlot::PendingOp::None;
+            moveSlot (i, to);
+            retarget (slot);   // back to wet (or stays dry if bypassed)
+
+            if (changesLatency)
+                noteLatencyChange (juce::jmin (i, to));
+
+            i = 0;   // indices shifted: rescan. Bounded, as every rescan clears one pending op.
+            continue;
+        }
+
+        if (slot.awaitingDip)
+        {
+            wantDip = true;
+
+            if (dipped)
+            {
+                slot.awaitingDip = false;   // joins the signal path, fully dry, and fades in
+                retarget (slot);
+                noteLatencyChange (i);
+            }
+        }
+
+        ++i;
+    }
+
+    // Keep the output silent until the change has passed through every slot
+    // with latency at and after where it happened (including a newly inserted
+    // slot, whose own delay starts empty).
+    if (latencyChanged)
+        dipHoldSamples = juce::jmax (dipHoldSamples, latencyFrom (changedFrom));
+
+    return wantDip;
+}
+
+bool ChainProcessor::retiredHasRoom() const noexcept
+{
+    // The audio thread is the only producer, so room can only grow until it pushes.
+    return retired.getNumReady() < kRetiredQueueCapacity;
+}
+
+bool ChainProcessor::isDry (const ChainSlot& slot) const noexcept
+{
+    if (slot.awaitingDip || slot.preparedBlockSize <= 0)
+        return true;   // not processed at all
+
+    return ! slot.wet.isSmoothing() && juce::exactlyEqual (slot.wet.getCurrentValue(), 0.0f);
+}
+
+bool ChainProcessor::outputIsDipped() const noexcept
+{
+    return dipHoldSamples > 0
+        || (! outputGain.isSmoothing() && juce::exactlyEqual (outputGain.getCurrentValue(), 0.0f));
+}
+
+int ChainProcessor::latencyFrom (int index) const noexcept
+{
+    int latency = 0;
+    for (int i = juce::jmax (0, index); i < numSlots; ++i)
+        if (! slots[(size_t) i]->awaitingDip)
+            latency += slots[(size_t) i]->latencySamples;
+
+    return latency;
+}
+
+void ChainProcessor::moveSlot (int from, int to) noexcept
+{
+    auto* slot = slots[(size_t) from];
+
+    if (from < to)
+        for (int i = from; i < to; ++i)
+            slots[(size_t) i] = slots[(size_t) (i + 1)];
+    else
+        for (int i = from; i > to; --i)
+            slots[(size_t) i] = slots[(size_t) (i - 1)];
+
+    slots[(size_t) to] = slot;
+}
+
+void ChainProcessor::retarget (ChainSlot& slot) noexcept
+{
+    // A slot outside the signal path is not processed, so its wet must not
+    // start a ramp it could never finish; it is retargeted when it joins.
+    if (! slot.awaitingDip)
+        slot.wet.setTargetValue (slot.targetWet());
 }
 
 int ChainProcessor::findSlotIndex (int slotId) const noexcept
@@ -218,11 +460,35 @@ void ChainProcessor::processSlot (ChainSlot& slot, juce::AudioBuffer<float>& ste
     }
 }
 
+void ChainProcessor::applyOutputGain (juce::AudioBuffer<float>& stereo) noexcept
+{
+    if (dipHoldSamples == 0 && ! outputGain.isSmoothing()
+        && juce::exactlyEqual (outputGain.getCurrentValue(), 1.0f))
+        return;   // no dip in progress: leave the output bit-exact
+
+    auto* outL = stereo.getWritePointer (0);
+    auto* outR = stereo.getWritePointer (1);
+
+    for (int i = 0; i < stereo.getNumSamples(); ++i)
+    {
+        float g = 0.0f;
+
+        if (dipHoldSamples > 0)
+            --dipHoldSamples;   // silent; the ramp back up waits until the hold is over
+        else
+            g = outputGain.getNextValue();
+
+        outL[i] *= g;
+        outR[i] *= g;
+    }
+}
+
 void ChainProcessor::publishState() noexcept
 {
     int latency = 0;
     for (int i = 0; i < numSlots; ++i)
-        latency += slots[(size_t) i]->latencySamples;
+        if (! slots[(size_t) i]->awaitingDip)
+            latency += slots[(size_t) i]->latencySamples;
 
     totalLatencySamples.store (latency, std::memory_order_relaxed);
     numActiveSlots.store (numSlots, std::memory_order_relaxed);

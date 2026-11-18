@@ -166,7 +166,15 @@ inline std::unique_ptr<ChainSlot> makeSlot (int id, std::unique_ptr<juce::AudioP
 
 // The sine runSine feeds a chain is continuous across calls on the same
 // ChainProcessor, so outputs of consecutive calls can be concatenated and
-// checked with maxStep. Sample n of that sine is sineSample(n, ...).
+// checked with maxStep. Sample n of that signal is sineSample(n, ...).
+//
+// The signal rides on a DC offset larger than the sine's amplitude, so it never
+// comes near zero (it stays within [0.25, 0.75] by default). That makes click
+// detection independent of the sine's phase: any hard (unfaded) switch, such
+// as x -> -x, x -> 0 or x -> 0.5x, jumps by at least 0.125, more than twice
+// the 0.06 click threshold, wherever in the sine it lands.
+constexpr float kTestSignalOffset = 0.5f;
+
 inline std::map<const ChainProcessor*, std::int64_t>& sinePositions()
 {
     static std::map<const ChainProcessor*, std::int64_t> positions;
@@ -179,14 +187,15 @@ inline std::int64_t sinePosition (const ChainProcessor& chain)
     return sinePositions()[&chain];
 }
 
-inline float sineSample (std::int64_t n, float amp = 0.5f, double freq = 440.0, double sr = 48000.0)
+inline float sineSample (std::int64_t n, float amp = 0.25f, double freq = 440.0, double sr = 48000.0)
 {
-    return amp * (float) std::sin (juce::MathConstants<double>::twoPi * freq * (double) n / sr);
+    return kTestSignalOffset
+         + amp * (float) std::sin (juce::MathConstants<double>::twoPi * freq * (double) n / sr);
 }
 
-// Feeds numBlocks blocks of a stereo (L = R) sine through `chain` and returns
-// the accumulated left-channel output.
-inline std::vector<float> runSine (ChainProcessor& chain, int numBlocks, float amp = 0.5f,
+// Feeds numBlocks blocks of a stereo (L = R) offset sine through `chain` and
+// returns the accumulated left-channel output.
+inline std::vector<float> runSine (ChainProcessor& chain, int numBlocks, float amp = 0.25f,
                                    double freq = 440.0, double sr = 48000.0, int block = 256)
 {
     auto& pos = sinePositions()[&chain];
