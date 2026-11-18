@@ -11,10 +11,13 @@ juce::String AudioEngine::initialise()
 {
     auto error = deviceManager.initialiseWithDefaultDevices (1, 2);
 
+    // Registered even on failure: a device the user picks later in the audio
+    // settings dialog then runs through this engine.
+    deviceManager.addAudioCallback (this);
+
     if (error.isNotEmpty())
         return juce::String (juce::CharPointer_UTF8 ("오디오 장치를 열 수 없습니다: ")) + error;
 
-    deviceManager.addAudioCallback (this);
     return {};
 }
 

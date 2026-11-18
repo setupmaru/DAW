@@ -25,7 +25,9 @@ public:
     ~AudioEngine() override;
 
     // Opens the default device (1 input, 2 outputs). Returns an empty string on
-    // success, otherwise a Korean error message.
+    // success, otherwise a Korean error message. The engine is registered as
+    // the device manager's callback either way, so a device opened later (for
+    // example from the audio settings dialog) is processed too.
     juce::String initialise();
     void shutdown();
 

@@ -32,8 +32,9 @@ set(DAW_APP_SOURCES
     src/Main.cpp
     src/MainComponent.cpp
     src/plugins/PluginScanner.cpp
-    # src/plugins/PluginEditorWindow.cpp
-    # src/ui/...
+    src/plugins/PluginEditorWindow.cpp
+    src/ui/ChainListComponent.cpp
+    src/ui/LevelMeter.cpp
 )
 # Test sources (DAWTests only).
 set(DAW_TEST_SOURCES
