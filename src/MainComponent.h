@@ -16,7 +16,7 @@
 
 // The single main screen (design.md 5.3):
 //
-//   [notice strip, only while there is a message]
+//   [notice strip: space always reserved, shown only with a message]
 //   [오디오 설정]                         입력 meter
 //   chain rows ... [+ 플러그인 추가]
 //   [플러그인 다시 스캔]                  출력 meter

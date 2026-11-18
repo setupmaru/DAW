@@ -15,9 +15,9 @@ constexpr int kBarHeight = 44;
 constexpr int kMeterWidth = 240;
 constexpr int kMargin = 8;
 
-// The settings dialog may enable up to this many inputs; the engine uses the
-// first enabled one.
-constexpr int kMaxInputChannels = 256;
+// The engine uses one input channel (design: 선택한 입력 채널 1개), so the
+// settings dialog allows only one; choosing another switches to it.
+constexpr int kMaxInputChannels = 1;
 } // namespace
 
 //==============================================================================
@@ -111,8 +111,9 @@ void MainComponent::resized()
 {
     auto area = getLocalBounds();
 
-    if (noticeLabel.isVisible())
-        noticeLabel.setBounds (area.removeFromTop (kNoticeHeight));
+    // The notice strip's height is always reserved, so the chain rows never
+    // move when a notice shows or hides (no mis-clicks on the wrong row).
+    noticeLabel.setBounds (area.removeFromTop (kNoticeHeight));
 
     auto top = area.removeFromTop (kBarHeight).reduced (kMargin, 6);
     audioSettingsButton.setBounds (top.removeFromLeft (120));
@@ -174,11 +175,7 @@ void MainComponent::showNotice (const juce::String& text, bool sticky)
     noticeSticky = sticky;
     noticeLabel.setText (text, juce::dontSendNotification);
 
-    if (! noticeLabel.isVisible())
-    {
-        noticeLabel.setVisible (true);
-        resized();
-    }
+    noticeLabel.setVisible (true);
 
     if (sticky)
         stopTimer();
@@ -192,11 +189,7 @@ void MainComponent::clearNotice()
     noticeSticky = false;
     noticeLabel.setText ({}, juce::dontSendNotification);
 
-    if (noticeLabel.isVisible())
-    {
-        noticeLabel.setVisible (false);
-        resized();
-    }
+    noticeLabel.setVisible (false);
 }
 
 void MainComponent::timerCallback()
@@ -300,7 +293,8 @@ void MainComponent::showAudioSettings()
     options.resizable = true;
     options.componentToCentreAround = this;
 
-    // Not modal: the dialog deletes itself when closed (launchAsync).
+    // launchAsync shows the dialog asynchronously modal (it does not block
+    // here) and the dialog deletes itself when closed.
     settingsDialog = options.launchAsync();
 }
 
@@ -308,7 +302,10 @@ void MainComponent::showAddPluginMenu()
 {
     // A copy, so the menu result maps onto the list the menu was built from
     // even if a scan changes the known plugins while the menu is open.
-    const auto types = scanner.getKnownPlugins().getTypes();
+    auto types = scanner.getKnownPlugins().getTypes();
+
+    // Instruments have no audio input and would only be refused when added.
+    types.removeIf ([] (const juce::PluginDescription& d) { return d.isInstrument; });
 
     juce::PopupMenu menu;
 

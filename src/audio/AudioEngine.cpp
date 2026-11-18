@@ -47,6 +47,9 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* inputCha
                                                     float* const* outputChannelData, int numOutputChannels,
                                                     int numSamples, const juce::AudioIODeviceCallbackContext&)
 {
+    // Flush denormals to zero for the whole callback (no allocation).
+    juce::ScopedNoDenormals noDenormals;
+
     // Not prepared: output silence.
     if (preparedBlockSize <= 0)
     {
