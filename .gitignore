@@ -3,3 +3,6 @@ build/
 .idea/
 *.user
 .superpowers/
+.vs/
+out/
+CMakeUserPresets.json
