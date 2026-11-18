@@ -24,14 +24,14 @@ enable_testing()
 set(DAW_CORE_SOURCES
     src/audio/ChainProcessor.cpp
     src/audio/AudioEngine.cpp
+    src/plugins/PluginChain.cpp
     # src/audio/...
-    # src/plugins/PluginChain.cpp
 )
 # App-only sources (DAW only).
 set(DAW_APP_SOURCES
     src/Main.cpp
     src/MainComponent.cpp
-    # src/plugins/PluginScanner.cpp
+    src/plugins/PluginScanner.cpp
     # src/plugins/PluginEditorWindow.cpp
     # src/ui/...
 )
@@ -41,6 +41,7 @@ set(DAW_TEST_SOURCES
     tests/SmokeTest.cpp
     tests/ChainProcessorTests.cpp
     tests/AudioEngineTests.cpp
+    tests/PluginChainTests.cpp
 )
 
 # --- Shared settings -------------------------------------------------------
