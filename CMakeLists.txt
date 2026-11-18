@@ -23,6 +23,7 @@ enable_testing()
 # linking JUCE modules twice).
 set(DAW_CORE_SOURCES
     src/audio/ChainProcessor.cpp
+    src/audio/AudioEngine.cpp
     # src/audio/...
     # src/plugins/PluginChain.cpp
 )
@@ -39,6 +40,7 @@ set(DAW_TEST_SOURCES
     tests/TestMain.cpp
     tests/SmokeTest.cpp
     tests/ChainProcessorTests.cpp
+    tests/AudioEngineTests.cpp
 )
 
 # --- Shared settings -------------------------------------------------------
