@@ -81,6 +81,8 @@ void AudioEngine::prepareForTest (double sampleRate, int blockSize)
     chain.prepare (sampleRate, size);
     muteGain.reset (sampleRate, ChainProcessor::kOutputDipSeconds);
     muteGain.setCurrentAndTargetValue (isOutputMuted() ? 0.0f : 1.0f);
+    monoMix.reset (sampleRate, ChainProcessor::kOutputDipSeconds);
+    monoMix.setCurrentAndTargetValue (isOutputMono() ? 1.0f : 0.0f);
     preparedBlockSize.store (size);
     chain.setProcessingActive (true);
 }
@@ -128,6 +130,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* inputCha
     float* work[2] = { workBuffer.getWritePointer (0), workBuffer.getWritePointer (1) };
 
     muteGain.setTargetValue (outputMuted.load() ? 0.0f : 1.0f);
+    monoMix.setTargetValue (outputMono.load() ? 1.0f : 0.0f);
     for (int start = 0; start < numSamples; start += blockSize)
     {
         const int n = std::min (blockSize, numSamples - start);
@@ -146,6 +149,16 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* inputCha
         chain.process (view);
         for (int i = 0; i < n; ++i)
         {
+            // Mono: crossfade each side towards the mid signal.
+            const float mono = monoMix.getNextValue();
+
+            if (mono > 0.0f)
+            {
+                const float mid = 0.5f * (work[0][i] + work[1][i]);
+                work[0][i] += mono * (mid - work[0][i]);
+                work[1][i] += mono * (mid - work[1][i]);
+            }
+
             const float gain = muteGain.getNextValue();
             for (int ch = 0; ch < 2; ++ch)
                 work[ch][i] = juce::exactlyEqual (gain, 0.0f) ? 0.0f : work[ch][i] * gain;

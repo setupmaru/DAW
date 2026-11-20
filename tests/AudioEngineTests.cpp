@@ -15,6 +15,7 @@ struct AudioEngineTests : public juce::UnitTest
     void runTest() override
     {
         testOutputMute();
+        testOutputMono();
         testDeviceErrorSettlesEdits();
 
         // The engine copies samples unchanged, so exact float comparison is
@@ -198,6 +199,86 @@ struct AudioEngineTests : public juce::UnitTest
         initiallyMuted.prepareForTest (44100.0, 128);
         run (initiallyMuted, in, out);
         expectEquals (out.getMagnitude (0, kBlock), 0.0f);
+    }
+
+    void testOutputMono()
+    {
+        // A stereo effect that leaves the right side empty: L = input, R = 0.
+        class LeftOnly : public GainProcessor
+        {
+        public:
+            LeftOnly() : GainProcessor (1.0f) {}
+            using GainProcessor::processBlock;
+            void processBlock (juce::AudioBuffer<float>& b, juce::MidiBuffer& m) override
+            {
+                GainProcessor::processBlock (b, m);
+                b.clear (1, 0, b.getNumSamples());
+            }
+        };
+
+        beginTest ("mono output sums L and R without a click, both ways");
+        {
+            AudioEngine engine;
+            expect (! engine.isOutputMono());
+            engine.prepareForTest (48000.0, 64);   // multi-chunk fades
+            auto slot = makeSlot (1, std::make_unique<LeftOnly>(), 48000.0, 64);
+            expect (engine.getChain().post ({ ChainCommandType::Insert, 1, 0, false, slot.get() }));
+            slot.release();
+
+            juce::AudioBuffer<float> in (1, kBlock), out (2, kBlock);
+            std::vector<float> left, right;
+            int position = 0;
+            const auto blocks = [&] (int count)
+            {
+                for (int b = 0; b < count; ++b)
+                {
+                    for (int i = 0; i < kBlock; ++i)
+                        in.setSample (0, i, sineSample (position++));
+                    run (engine, in, out);
+                    left.insert (left.end(), out.getReadPointer (0), out.getReadPointer (0) + kBlock);
+                    right.insert (right.end(), out.getReadPointer (1), out.getReadPointer (1) + kBlock);
+                }
+            };
+
+            blocks (10);   // the insert has faded in: stereo, R silent
+            expectWithinAbsoluteError (out.getSample (0, kBlock - 1), in.getSample (0, kBlock - 1), 1.0e-6f);
+            expectEquals (out.getMagnitude (1, 0, kBlock), 0.0f);
+
+            engine.setOutputMono (true);
+            expect (engine.isOutputMono());
+            blocks (4);
+
+            for (int ch = 0; ch < 2; ++ch)
+                expectWithinAbsoluteError (out.getSample (ch, kBlock - 1),
+                                           0.5f * in.getSample (0, kBlock - 1), 1.0e-6f);
+
+            engine.setOutputMono (false);
+            blocks (4);
+            expectWithinAbsoluteError (out.getSample (0, kBlock - 1), in.getSample (0, kBlock - 1), 1.0e-6f);
+            expectEquals (out.getMagnitude (1, 0, kBlock), 0.0f);
+
+            expectLessThan (maxStep (left), 0.06f);
+            expectLessThan (maxStep (right), 0.06f);
+        }
+
+        beginTest ("mono set before startup applies from the first sample; a mono source is unchanged");
+        {
+            AudioEngine engine;
+            engine.setOutputMono (true);
+            engine.prepareForTest (48000.0, kBlock);
+
+            juce::AudioBuffer<float> in (1, kBlock), out (2, kBlock);
+            for (int i = 0; i < kBlock; ++i)
+                in.setSample (0, i, sine (i, 0.5f));
+
+            run (engine, in, out);
+
+            bool same = true;
+            for (int i = 0; i < kBlock; ++i)
+                same = same && juce::exactlyEqual (out.getSample (0, i), out.getSample (1, i))
+                            && std::abs (out.getSample (0, i) - in.getSample (0, i)) < 1.0e-6f;
+            expect (same, "L == R == input when the source is already mono");
+        }
     }
 
     void testDeviceErrorSettlesEdits()

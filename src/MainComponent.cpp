@@ -20,6 +20,7 @@ constexpr int kRestoreProblemNoticeMs = 15000;
 constexpr int kRestorePedalHoldMs = 5000;
 
 constexpr const char* kMutedSettingKey = "outputMuted";
+constexpr const char* kMonoSettingKey = "outputMono";
 constexpr const char* kDeviceSettingKey = "audioDevice";   // AudioDeviceManager::createStateXml()
 constexpr int kNoticeHeight = 30;
 constexpr int kBarHeight = 44;
@@ -69,6 +70,12 @@ MainComponent::MainComponent()
     muteButton.onClick = [this] { setMuted (! engine.isOutputMuted()); };
     // Return/space must not toggle the broadcast output after a click on it.
     muteButton.setWantsKeyboardFocus (false);
+
+    monoButton.setButtonText (utf8 ("모노"));
+    monoButton.setColour (juce::TextButton::buttonOnColourId, juce::Colours::royalblue);
+    monoButton.onClick = [this] { setMono (! engine.isOutputMono()); };
+    monoButton.setWantsKeyboardFocus (false);
+    addAndMakeVisible (monoButton);
     addAndMakeVisible (muteButton);
 
     scanButton.setTooltip (utf8 ("새로 설치한 VST3 플러그인을 찾습니다. 플러그인이 많으면 시간이 걸릴 수 있습니다."));
@@ -103,6 +110,9 @@ MainComponent::MainComponent()
     const bool startMuted = store.getSettings().getBoolValue (kMutedSettingKey, false);
     engine.setOutputMuted (startMuted);
     updateMuteButton();
+
+    engine.setOutputMono (store.getSettings().getBoolValue (kMonoSettingKey, false));
+    updateMonoButton();
 
     // A failure keeps the app open: the message stays at the top, and a device
     // can still be chosen in the audio settings dialog.
@@ -217,6 +227,8 @@ void MainComponent::resized()
     scanButton.setBounds (bottom.removeFromLeft (150));
     bottom.removeFromLeft (8);
     muteButton.setBounds (bottom.removeFromLeft (110));
+    bottom.removeFromLeft (6);
+    monoButton.setBounds (bottom.removeFromLeft (64));
     outputMeter.setBounds (bottom.removeFromRight (meterWidth));
 
     chainList.setBounds (area.reduced (0, 1));
@@ -360,6 +372,9 @@ void MainComponent::updateStatus()
                       <= (float) statusLabel.getWidth() - 8.0f;
 
     auto line = fits ? full : numbers;
+
+    if (engine.isOutputMono())
+        line = utf8 ("모노  ·  ") + line;
 
     // Kept visible even when a notice covers the strip above.
     if (engine.isOutputMuted())
@@ -637,6 +652,30 @@ void MainComponent::updateMuteButton()
     muteButton.setTooltip (muted
                                ? utf8 ("지금은 소리가 밖으로 나가지 않습니다. 눌러서 출력을 켭니다.")
                                : utf8 ("눌러서 출력을 끕니다(음소거). 효과는 계속 처리되고, 다음 실행 때도 이 상태로 시작합니다."));
+}
+
+//==============================================================================
+// Mono output
+
+void MainComponent::setMono (bool mono)
+{
+    engine.setOutputMono (mono);   // the engine fades, so this never clicks
+    updateMonoButton();
+    updateStatus();
+
+    store.getSettings().setValue (kMonoSettingKey, mono);
+
+    if (! store.saveSettings())
+        showNotice (utf8 ("모노 설정을 저장하지 못했습니다. 다음 실행 때는 이전 상태로 시작할 수 있습니다."));
+}
+
+void MainComponent::updateMonoButton()
+{
+    const bool mono = engine.isOutputMono();
+    monoButton.setToggleState (mono, juce::dontSendNotification);   // lit while mono
+    monoButton.setTooltip (mono
+                               ? utf8 ("모노 켜짐: 왼쪽과 오른쪽에 같은 소리를 내보냅니다. 눌러서 스테레오로 돌아갑니다.")
+                               : utf8 ("눌러서 모노로 내보냅니다(왼쪽 = 오른쪽). 스테레오 효과 때문에 목소리가 한쪽으로 치우치거나 방송에서 소리가 이상할 때 켜세요."));
 }
 
 //==============================================================================

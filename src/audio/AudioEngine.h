@@ -43,6 +43,13 @@ public:
     void setOutputMuted (bool muted) { outputMuted.store (muted); }
     bool isOutputMuted() const { return outputMuted.load(); }
 
+    // Mono output: after the chain (and before mute) left and right are both
+    // set to (L + R) / 2, so stereo effects cannot leave the voice lopsided.
+    // Switching fades over kOutputDipSeconds (no click); a value set before
+    // the device starts applies from the first sample. Any thread.
+    void setOutputMono (bool mono) { outputMono.store (mono); }
+    bool isOutputMono() const { return outputMono.load(); }
+
     LevelMeterSource& getInputMeter() { return inputMeter; }
     LevelMeterSource& getOutputMeter() { return outputMeter; }
 
@@ -61,6 +68,8 @@ private:
     std::atomic<int> inputChannel { 0 };
     std::atomic<bool> outputMuted { false };
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> muteGain { 1.0f };
+    std::atomic<bool> outputMono { false };
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> monoMix { 0.0f };   // 0 = stereo, 1 = mono
     LevelMeterSource inputMeter, outputMeter;
 
     JUCE_DECLARE_NON_COPYABLE (AudioEngine)

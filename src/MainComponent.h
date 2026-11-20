@@ -21,7 +21,7 @@
 //   [notice strip: space always reserved, shown only with a message]
 //   [오디오 설정] [프리셋 ▼]   status line   입력 meter
 //   chain rows ... [+ 플러그인 추가]
-//   [플러그인 다시 스캔] [출력 켜짐|음소거 중]  출력 meter
+//   [플러그인 다시 스캔] [출력 켜짐|음소거 중] [모노]  출력 meter
 //
 // Persistence (docs/frontend-backend-interface.md §3): the mute state is
 // remembered in settings.xml; the chain is saved to last-chain.xml (2 s after a
@@ -68,6 +68,10 @@ private:
     void setMuted (bool muted);
     void updateMuteButton();
 
+    // Mono output (left = right), remembered like the mute state
+    void setMono (bool mono);
+    void updateMonoButton();
+
     // Presets and the automatically saved chain
     void showPresetMenu();
     void askPresetNameAndSave();
@@ -100,7 +104,7 @@ private:
 
     juce::TooltipWindow tooltipWindow { nullptr, 700 };   // on the desktop: not clipped to this window
     juce::Label noticeLabel, statusLabel;
-    juce::TextButton audioSettingsButton, presetButton, scanButton, muteButton;
+    juce::TextButton audioSettingsButton, presetButton, scanButton, muteButton, monoButton;
     LevelMeter inputMeter, outputMeter;
     ChainListComponent chainList;
 
