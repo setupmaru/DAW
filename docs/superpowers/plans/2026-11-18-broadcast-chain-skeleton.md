@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- 저장소 루트는 `/home/doyoon/projects/setupmaru/DAW`. 모든 경로는 이 기준이다.
+- 저장소 루트(`DAW/`)를 기준으로 모든 경로를 적는다.
 - JUCE는 `FetchContent`로 `GIT_TAG 8.0.17-security`, `GIT_SHALLOW TRUE`. 저장소에 JUCE를 복사하지 않는다.
 - 플러그인 형식은 VST3만: `JUCE_PLUGINHOST_VST3=1`, `JUCE_PLUGINHOST_AU=0`, `JUCE_PLUGINHOST_LADSPA=0`, `JUCE_PLUGINHOST_LV2=0`.
 - 의존성 축소: `JUCE_WEB_BROWSER=0`, `JUCE_USE_CURL=0`.
