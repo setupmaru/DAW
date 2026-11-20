@@ -59,12 +59,18 @@ ctest --test-dir build -C Release --output-on-failure
 빌드가 끝나면 앱은 `build/DAW_artefacts/<Config>/DAW`(Windows는 `DAW.exe`)에 생깁니다.
 `<Config>`는 빌드 구성 이름입니다(예: `Release`, `Debug`).
 
-## ASIO 옵션
+## ASIO
 
-`DAW_ENABLE_ASIO`(기본 OFF)를 켜면 `JUCE_ASIO=1`로 빌드합니다. Steinberg ASIO SDK 경로가 필요합니다.
+Windows 빌드에는 ASIO가 기본으로 들어갑니다(`DAW_ENABLE_ASIO`, Windows에서 기본 ON).
+JUCE에 포함된 ASIO SDK 헤더를 쓰므로 따로 받을 것은 없습니다.
+
+- **쓰는 법:** [오디오 설정] → 장치 종류에서 `ASIO`를 고르고, 오디오 인터페이스의 ASIO 드라이버를 고릅니다. 지연이 가장 짧습니다.
+- **기억:** 고른 장치(종류, 장치, 샘플레이트, 버퍼)는 다음 실행 때도 그대로 열립니다. 그 장치가 없으면 기본 장치로 엽니다.
+- **주의:** ASIO 드라이버에 따라 같은 인터페이스를 다른 프로그램(OBS 등)과 동시에 못 쓸 수 있습니다. 그럴 때는 OBS가 인터페이스의 루프백 채널을 쓰는지 확인하거나 Windows 오디오(WASAPI)로 바꾸세요.
+- **다른 SDK 사용:** 다른 ASIO SDK를 쓰려면 경로를 지정합니다.
 
 ```powershell
-cmake -B build -DDAW_ENABLE_ASIO=ON -DDAW_ASIO_SDK_DIR=C:/path/to/asiosdk
+cmake -B build -DDAW_ASIO_SDK_DIR=C:/path/to/asiosdk
 ```
 
 ## 검증 상태
@@ -101,3 +107,6 @@ Copyright (C) 2026 setupmaru
 수정한 버전을 배포하거나 네트워크로 서비스할 때는 그 소스 코드도 AGPLv3로 공개해야 합니다.
 
 이 프로그램은 [JUCE](https://juce.com)를 AGPLv3 조건으로 사용합니다. JUCE는 Raw Material Software Limited의 저작물입니다.
+
+Windows 빌드는 JUCE에 포함된 Steinberg ASIO SDK 헤더(GPLv3)를 사용합니다.
+ASIO is a trademark and software of Steinberg Media Technologies GmbH.

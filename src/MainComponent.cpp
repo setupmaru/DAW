@@ -20,6 +20,7 @@ constexpr int kRestoreProblemNoticeMs = 15000;
 constexpr int kRestorePedalHoldMs = 5000;
 
 constexpr const char* kMutedSettingKey = "outputMuted";
+constexpr const char* kDeviceSettingKey = "audioDevice";   // AudioDeviceManager::createStateXml()
 constexpr int kNoticeHeight = 30;
 constexpr int kBarHeight = 44;
 constexpr int kMeterWidth = 240;
@@ -53,7 +54,8 @@ MainComponent::MainComponent()
     addAndMakeVisible (statusLabel);
 
     audioSettingsButton.setButtonText (utf8 ("오디오 설정"));
-    audioSettingsButton.setTooltip (utf8 ("마이크가 꽂힌 오디오 인터페이스와 입력 채널, 출력을 고릅니다."));
+    audioSettingsButton.setTooltip (utf8 ("마이크가 꽂힌 오디오 인터페이스와 입력 채널, 출력을 고릅니다. ")
+                                    + utf8 ("인터페이스 전용 ASIO 드라이버가 있으면 장치 종류에서 ASIO를 고르면 지연이 가장 짧습니다. 고른 장치는 다음 실행 때도 그대로 열립니다."));
     audioSettingsButton.onClick = [this] { showAudioSettings(); };
     addAndMakeVisible (audioSettingsButton);
 
@@ -104,7 +106,10 @@ MainComponent::MainComponent()
 
     // A failure keeps the app open: the message stays at the top, and a device
     // can still be chosen in the audio settings dialog.
-    startupDeviceError = engine.initialise();
+    // The device chosen last time (type such as ASIO, devices, rate, buffer),
+    // or the default device on the first run or when it is gone.
+    const auto savedDevice = store.getSettings().getXmlValue (kDeviceSettingKey);
+    startupDeviceError = engine.initialise (savedDevice.get());
 
     syncWithDevice();
     engine.getDeviceManager().addChangeListener (this);
@@ -207,6 +212,15 @@ void MainComponent::changeListenerCallback (juce::ChangeBroadcaster*)
     // The device manager changed (device, sample rate, block size or channels),
     // usually from the audio settings dialog.
     syncWithDevice();
+
+    // Remember the user's choice for the next launch. createStateXml() holds
+    // only explicitly chosen settings, so JUCE falling back to the default
+    // device (interface unplugged) does not overwrite the saved choice.
+    if (const auto state = engine.getDeviceManager().createStateXml())
+    {
+        store.getSettings().setValue (kDeviceSettingKey, state.get());
+        store.saveSettings();
+    }
 }
 
 void MainComponent::syncWithDevice()
@@ -323,7 +337,8 @@ void MainComponent::updateStatus()
     if (chainMs >= ui::kMinShownLatencyMs)
         numbers << utf8 ("  ·  효과 지연 ") << ui::formatMs (chainMs);
 
-    const auto full = deviceName + "  ·  " + numbers;
+    const auto typeName = engine.getDeviceManager().getCurrentAudioDeviceType();
+    const auto full = deviceName + (typeName.isNotEmpty() ? " (" + typeName + ")" : juce::String()) + "  ·  " + numbers;
     const bool fits = juce::GlyphArrangement::getStringWidth (statusLabel.getFont(), full)
                       <= (float) statusLabel.getWidth() - 8.0f;
 
@@ -335,6 +350,7 @@ void MainComponent::updateStatus()
 
     statusLabel.setText (line, juce::dontSendNotification);
     statusLabel.setTooltip (utf8 ("장치: ") + deviceName + "\n"
+                            + (typeName.isNotEmpty() ? utf8 ("종류: ") + typeName + "\n" : juce::String())
                             + utf8 ("버퍼가 작을수록 목소리가 덜 늦게 나가지만, 소리가 끊기면 [오디오 설정]에서 버퍼를 키우세요.\n")
                             + utf8 ("효과 지연은 체인의 플러그인이 더하는 지연입니다."));
 }

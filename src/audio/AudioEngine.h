@@ -21,11 +21,15 @@ public:
     AudioEngine();
     ~AudioEngine() override;
 
-    // Opens the default device (1 input, 2 outputs). Returns an empty string on
-    // success, otherwise a Korean error message. The engine is registered as
-    // the device manager's callback either way, so a device opened later (for
-    // example from the audio settings dialog) is processed too.
-    juce::String initialise();
+    // Opens the device (1 input, 2 outputs): the one described by
+    // savedDeviceState (AudioDeviceManager::createStateXml() from an earlier
+    // run: device type such as ASIO, devices, rate, buffer, channels), falling
+    // back to the default device when it is null or that device is gone.
+    // Returns an empty string on success, otherwise a Korean error message.
+    // The engine is registered as the device manager's callback either way, so
+    // a device opened later (for example from the audio settings dialog) is
+    // processed too.
+    juce::String initialise (const juce::XmlElement* savedDeviceState = nullptr);
     void shutdown();
 
     juce::AudioDeviceManager& getDeviceManager() { return deviceManager; }

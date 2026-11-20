@@ -12,9 +12,11 @@ AudioEngine::~AudioEngine()
     shutdown();
 }
 
-juce::String AudioEngine::initialise()
+juce::String AudioEngine::initialise (const juce::XmlElement* savedDeviceState)
 {
-    auto error = deviceManager.initialiseWithDefaultDevices (1, 2);
+    // selectDefaultDeviceOnFailure: a saved device that is unplugged now (or
+    // an ASIO driver that was uninstalled) falls back to the default device.
+    auto error = deviceManager.initialise (1, 2, savedDeviceState, true);
 
     // Registered even on failure: a device the user picks later in the audio
     // settings dialog then runs through this engine.
