@@ -52,6 +52,7 @@ jobs:
           New-Item -ItemType Directory -Force dist/DAW | Out-Null
           Copy-Item $exe dist/DAW/
           Copy-Item README.md dist/DAW/
+          Copy-Item LICENSE dist/DAW/LICENSE.txt
           Compress-Archive -Path dist/DAW/* -DestinationPath "dist/DAW-$env:TAG-windows-x64.zip" -Force
           Get-FileHash "dist/DAW-$env:TAG-windows-x64.zip" -Algorithm SHA256 | Format-List
 

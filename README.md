@@ -91,3 +91,13 @@ cmake -B build -DDAW_ENABLE_ASIO=ON -DDAW_ASIO_SDK_DIR=C:/path/to/asiosdk
 - [ ] **레이턴시 있는 플러그인:** 레이턴시가 있는 플러그인을 추가하거나 삭제하면 소리가 아주 잠깐 끊긴다(정상 동작).
 - [ ] **최대 개수:** 플러그인을 16개 넣은 뒤 17번째를 추가하면 추가되지 않고 안내 메시지가 보인다.
 - [ ] **종료:** 편집 창과 `오디오 설정` 창을 연 채로 앱을 닫아도 오류 없이 꺼진다.
+
+## 라이선스
+
+Copyright (C) 2026 setupmaru
+
+이 프로그램은 [GNU Affero General Public License v3.0](LICENSE)(AGPLv3)으로 배포합니다.
+자유 소프트웨어로서 AGPLv3 조건에 따라 다시 배포하거나 고칠 수 있으며, **아무런 보증 없이** 제공됩니다.
+수정한 버전을 배포하거나 네트워크로 서비스할 때는 그 소스 코드도 AGPLv3로 공개해야 합니다.
+
+이 프로그램은 [JUCE](https://juce.com)를 AGPLv3 조건으로 사용합니다. JUCE는 Raw Material Software Limited의 저작물입니다.
