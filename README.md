@@ -9,15 +9,20 @@
 
 ## 내려받기 (Windows)
 
-[Releases](https://github.com/setupmaru/DAW/releases)에서 `DAW-…-windows-x64.zip`을 받아 압축을 풀고 `DAW.exe`를 실행하세요. 설치는 필요 없습니다.
+[Releases](https://github.com/setupmaru/DAW/releases)에서 받습니다.
+
+- **설치 파일:** `DAW-Setup-v….exe`를 실행해 설치합니다(시작 메뉴 바로가기, 제거 프로그램 포함).
+- **설치 없이:** `DAW-v…-windows-x64.zip`을 받아 압축을 풀고 `DAW.exe`를 실행합니다.
+
+설치 파일은 `installer/DAW.iss`(Inno Setup 6)와 `installer/build-installer.ps1`로 만들고, CI의 Windows 빌드마다 함께 만들어 실행 페이지의 아티팩트로 올립니다.
 
 ## 릴리스 만들기
 
-`v0.1.0`처럼 `v`로 시작하는 태그를 푸시하면 `.github/workflows/release.yml`이 Windows에서 빌드·테스트한 뒤 zip을 릴리스에 올립니다.
+`v1.0.0`처럼 `v`로 시작하는 태그를 푸시하면 `.github/workflows/release.yml`이 Windows에서 빌드·테스트한 뒤 설치 파일과 zip을 릴리스에 올립니다.
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 ## Windows 준비물

@@ -44,28 +44,20 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
 
-      - name: Package
+      - name: Package (zip + installer)
         shell: pwsh
-        run: |
-          $exe = "build/DAW_artefacts/Release/DAW.exe"
-          if (-not (Test-Path $exe)) { throw "DAW.exe not found at $exe" }
-          New-Item -ItemType Directory -Force dist/DAW | Out-Null
-          Copy-Item $exe dist/DAW/
-          Copy-Item README.md dist/DAW/
-          Copy-Item LICENSE dist/DAW/LICENSE.txt
-          Copy-Item build/_deps/juce-src/modules/juce_audio_devices/native/asio/LICENSE.txt dist/DAW/THIRD-PARTY-ASIO-LICENSE.txt
-          Compress-Archive -Path dist/DAW/* -DestinationPath "dist/DAW-$env:TAG-windows-x64.zip" -Force
-          Get-FileHash "dist/DAW-$env:TAG-windows-x64.zip" -Algorithm SHA256 | Format-List
+        run: ./installer/build-installer.ps1 -Version ($env:TAG.TrimStart('v'))
 
       - name: Publish release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $zip = "dist/DAW-$env:TAG-windows-x64.zip"
+          $version = $env:TAG.TrimStart('v')
+          $files = @("dist/DAW-Setup-v$version.exe", "dist/DAW-v$version-windows-x64.zip")
           gh release view $env:TAG --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $env:TAG $zip --clobber --repo $env:GITHUB_REPOSITORY
+            gh release upload $env:TAG @files --clobber --repo $env:GITHUB_REPOSITORY
           } else {
-            gh release create $env:TAG $zip --repo $env:GITHUB_REPOSITORY --title "DAW $env:TAG" --notes-file docs/release-notes.md
+            gh release create $env:TAG @files --repo $env:GITHUB_REPOSITORY --title "DAW $env:TAG" --notes-file docs/release-notes.md
           }
