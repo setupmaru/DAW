@@ -46,7 +46,9 @@ jobs:
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build --config Release --parallel
+        # JUCE translation units with LTO need ~1 GB each: unbounded parallelism
+        # gets the compiler OOM-killed on the Linux runner.
+        run: cmake --build build --config Release --parallel ${{ runner.os == 'Linux' && 2 || 4 }}
 
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
