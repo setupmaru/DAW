@@ -14,9 +14,46 @@ AudioEngine::~AudioEngine()
 
 juce::String AudioEngine::initialise (const juce::XmlElement* savedDeviceState)
 {
-    // selectDefaultDeviceOnFailure: a saved device that is unplugged now (or
-    // an ASIO driver that was uninstalled) falls back to the default device.
     auto error = deviceManager.initialise (1, 2, savedDeviceState, true);
+
+    // JUCE's own fallback (selectDefaultDeviceOnFailure) stays inside the saved
+    // device type. For ASIO that means another installed ASIO driver, or none
+    // at all when the unplugged interface's driver is still registered. Then
+    // open the default device of the first other type that has devices (on
+    // Windows: Windows Audio). treatAsChosenDevice is false, so the saved
+    // choice is kept and the interface opens again once it is back.
+    if (savedDeviceState != nullptr)
+    {
+        auto* device = deviceManager.getCurrentAudioDevice();
+        const auto savedOutput = savedDeviceState->getStringAttribute ("audioOutputDeviceName");
+        const bool wrongAsioDriver = device != nullptr
+                                     && deviceManager.getCurrentAudioDeviceType() == "ASIO"
+                                     && savedOutput.isNotEmpty() && device->getName() != savedOutput;
+
+        if (device == nullptr || wrongAsioDriver)
+        {
+            const auto currentType = deviceManager.getCurrentAudioDeviceType();
+
+            for (auto* type : deviceManager.getAvailableDeviceTypes())
+            {
+                if (type->getTypeName() == currentType || type->getTypeName() == "ASIO")
+                    continue;
+
+                type->scanForDevices();
+
+                if (type->getDeviceNames (false).isEmpty())
+                    continue;
+
+                deviceManager.setCurrentAudioDeviceType (type->getTypeName(), false);
+
+                if (deviceManager.getCurrentAudioDevice() != nullptr)
+                {
+                    error.clear();
+                    break;
+                }
+            }
+        }
+    }
 
     // Registered even on failure: a device the user picks later in the audio
     // settings dialog then runs through this engine.

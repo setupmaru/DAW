@@ -5,8 +5,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# ASIO (Windows only). JUCE 8 bundles the ASIO SDK headers (GPLv3, compatible
-# with this project's AGPLv3), so nothing else is needed. DAW_ASIO_SDK_DIR
+# ASIO (Windows only). JUCE 8 bundles the ASIO SDK headers (Steinberg ASIO
+# License or GPLv3; used here under GPLv3, compatible with this project's
+# AGPLv3), so nothing else is needed. DAW_ASIO_SDK_DIR
 # optionally points at another copy of the SDK instead.
 if(WIN32)
     set(DAW_ASIO_DEFAULT ON)
@@ -76,6 +77,9 @@ if(DAW_ENABLE_ASIO AND WIN32)
     set(DAW_ASIO_DEFINITIONS JUCE_ASIO=1)
 
     if(DAW_ASIO_SDK_DIR)
+        if(NOT EXISTS "${DAW_ASIO_SDK_DIR}/common/iasiodrv.h")
+            message(FATAL_ERROR "DAW_ASIO_SDK_DIR does not look like an ASIO SDK: ${DAW_ASIO_SDK_DIR}/common/iasiodrv.h not found")
+        endif()
         list(APPEND DAW_ASIO_DEFINITIONS JUCE_ASIO_USE_EXTERNAL_SDK=1)
         set(DAW_ASIO_INCLUDES "${DAW_ASIO_SDK_DIR}/common" "${DAW_ASIO_SDK_DIR}")
     endif()

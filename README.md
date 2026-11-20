@@ -64,9 +64,9 @@ ctest --test-dir build -C Release --output-on-failure
 Windows 빌드에는 ASIO가 기본으로 들어갑니다(`DAW_ENABLE_ASIO`, Windows에서 기본 ON).
 JUCE에 포함된 ASIO SDK 헤더를 쓰므로 따로 받을 것은 없습니다.
 
-- **쓰는 법:** [오디오 설정] → 장치 종류에서 `ASIO`를 고르고, 오디오 인터페이스의 ASIO 드라이버를 고릅니다. 지연이 가장 짧습니다.
-- **기억:** 고른 장치(종류, 장치, 샘플레이트, 버퍼)는 다음 실행 때도 그대로 열립니다. 그 장치가 없으면 기본 장치로 엽니다.
-- **주의:** ASIO 드라이버에 따라 같은 인터페이스를 다른 프로그램(OBS 등)과 동시에 못 쓸 수 있습니다. 그럴 때는 OBS가 인터페이스의 루프백 채널을 쓰는지 확인하거나 Windows 오디오(WASAPI)로 바꾸세요.
+- **쓰는 법:** [오디오 설정] → 장치 종류에서 `ASIO`를 고르고, 오디오 인터페이스의 ASIO 드라이버를 고릅니다. 지연이 가장 짧습니다. `ASIO` 항목은 ASIO 드라이버가 설치돼 있을 때만 보입니다(오디오 인터페이스 제조사 드라이버를 설치하세요).
+- **기억:** 고른 장치(종류, 장치, 샘플레이트, 버퍼)는 다음 실행 때도 그대로 열립니다. 그 장치를 열 수 없으면(인터페이스가 빠짐 등) Windows 오디오의 기본 장치로 열고 위쪽에 알려 줍니다. 저장해 둔 선택은 그대로 남아, 인터페이스를 다시 꽂고 실행하면 다시 그 장치로 열립니다.
+- **주의:** 대부분의 ASIO 드라이버는 한 번에 한 프로그램만 쓸 수 있습니다. ASIO가 열려 있는 동안 다른 프로그램의 소리가 끊기거나, 다른 프로그램이 이미 쓰고 있으면 ASIO가 안 열릴 수 있습니다. 그럴 때는 다른 프로그램을 닫거나 [오디오 설정]에서 Windows 오디오를 고르세요.
 - **다른 SDK 사용:** 다른 ASIO SDK를 쓰려면 경로를 지정합니다.
 
 ```powershell
@@ -108,5 +108,5 @@ Copyright (C) 2026 setupmaru
 
 이 프로그램은 [JUCE](https://juce.com)를 AGPLv3 조건으로 사용합니다. JUCE는 Raw Material Software Limited의 저작물입니다.
 
-Windows 빌드는 JUCE에 포함된 Steinberg ASIO SDK 헤더(GPLv3)를 사용합니다.
+Windows 빌드는 JUCE에 포함된 Steinberg ASIO SDK 헤더를 사용합니다. 이 헤더는 Steinberg ASIO 라이선스 또는 GPLv3의 이중 라이선스이며, 이 프로젝트는 GPLv3 조건으로 사용합니다(릴리스 zip의 `THIRD-PARTY-ASIO-LICENSE.txt`).
 ASIO is a trademark and software of Steinberg Media Technologies GmbH.

@@ -111,6 +111,21 @@ MainComponent::MainComponent()
     const auto savedDevice = store.getSettings().getXmlValue (kDeviceSettingKey);
     startupDeviceError = engine.initialise (savedDevice.get());
 
+    // The saved device could not be opened and another one was (interface
+    // unplugged, driver removed): say so, or the mic may silently be the
+    // laptop's. Shown below, after the startup notices are settled.
+    juce::String fallbackNotice;
+
+    if (savedDevice != nullptr)
+    {
+        const auto savedName = savedDevice->getStringAttribute ("audioOutputDeviceName");
+        auto* opened = engine.getDeviceManager().getCurrentAudioDevice();
+
+        if (savedName.isNotEmpty() && opened != nullptr && opened->getName() != savedName)
+            fallbackNotice = utf8 ("저장해 둔 오디오 장치를 찾지 못해 다른 장치로 열었습니다: ") + savedName + utf8 (" → ")
+                             + opened->getName() + utf8 (". 오디오 인터페이스가 연결돼 있는지 확인하세요.");
+    }
+
     syncWithDevice();
     engine.getDeviceManager().addChangeListener (this);
 
@@ -120,7 +135,9 @@ MainComponent::MainComponent()
     // Starting muted on purpose is fine, but it must not go unnoticed: a
     // streamer could go live with no sound. (A device or restore problem shown
     // already takes precedence; the red button still shows the state.)
-    if (startMuted && ! noticeLabel.isVisible())
+    if (fallbackNotice.isNotEmpty())
+        showNotice (fallbackNotice, false, kDeviceChangedNoticeMs);
+    else if (startMuted && ! noticeLabel.isVisible())
         showNotice (utf8 ("지난번에 음소거해 둔 상태로 시작했습니다. 방송에 소리를 내보내려면 [음소거 중]을 누르세요."),
                     false, kRestoreProblemNoticeMs);
 

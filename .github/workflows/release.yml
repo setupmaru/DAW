@@ -53,6 +53,7 @@ jobs:
           Copy-Item $exe dist/DAW/
           Copy-Item README.md dist/DAW/
           Copy-Item LICENSE dist/DAW/LICENSE.txt
+          Copy-Item build/_deps/juce-src/modules/juce_audio_devices/native/asio/LICENSE.txt dist/DAW/THIRD-PARTY-ASIO-LICENSE.txt
           Compress-Archive -Path dist/DAW/* -DestinationPath "dist/DAW-$env:TAG-windows-x64.zip" -Force
           Get-FileHash "dist/DAW-$env:TAG-windows-x64.zip" -Algorithm SHA256 | Format-List
 

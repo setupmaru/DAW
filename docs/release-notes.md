@@ -20,11 +20,11 @@
 ## 알려진 제한
 
 - 실제 오디오 장치와 VST3 플러그인으로 듣는 검증은 아직 충분하지 않습니다. 문제가 있으면 [Issues](https://github.com/setupmaru/DAW/issues)로 알려 주세요.
-- ASIO 드라이버에 따라 같은 오디오 인터페이스를 다른 프로그램(OBS 등)과 동시에 못 쓸 수 있습니다. 그럴 때는 Windows 오디오(WASAPI)를 쓰세요.
+- 대부분의 ASIO 드라이버는 한 번에 한 프로그램만 쓸 수 있습니다. ASIO가 안 열리거나 다른 프로그램 소리가 끊기면 다른 프로그램을 닫거나 [오디오 설정]에서 Windows 오디오를 고르세요.
 - 지연이 있는 플러그인을 방송 중에 넣거나 빼면 소리가 아주 잠깐 비는 것은 정상입니다.
 
 ## 라이선스
 
 GNU AGPLv3로 배포합니다(zip 안의 `LICENSE.txt`). 소스 코드: https://github.com/setupmaru/DAW
 
-ASIO is a trademark and software of Steinberg Media Technologies GmbH. ASIO SDK 헤더는 GPLv3입니다.
+ASIO is a trademark and software of Steinberg Media Technologies GmbH. ASIO SDK 헤더는 Steinberg ASIO 라이선스 또는 GPLv3의 이중 라이선스이며 GPLv3 조건으로 사용합니다(zip 안의 `THIRD-PARTY-ASIO-LICENSE.txt`).
