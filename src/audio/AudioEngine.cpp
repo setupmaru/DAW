@@ -2,6 +2,11 @@
 
 #include <algorithm>
 
+AudioEngine::AudioEngine()
+{
+    chain.setProcessingActive (false);
+}
+
 AudioEngine::~AudioEngine()
 {
     shutdown();
@@ -25,6 +30,7 @@ void AudioEngine::shutdown()
 {
     deviceManager.removeAudioCallback (this);
     deviceManager.closeAudioDevice();
+    audioDeviceStopped();
 }
 
 void AudioEngine::prepareForTest (double sampleRate, int blockSize)
@@ -33,6 +39,7 @@ void AudioEngine::prepareForTest (double sampleRate, int blockSize)
     workBuffer.setSize (2, preparedBlockSize);
     workBuffer.clear();
     chain.prepare (sampleRate, preparedBlockSize);
+    chain.setProcessingActive (true);
 }
 
 void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* device)
@@ -41,7 +48,13 @@ void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* device)
         prepareForTest (device->getCurrentSampleRate(), device->getCurrentBufferSizeSamples());
 }
 
-void AudioEngine::audioDeviceStopped() {}
+void AudioEngine::audioDeviceStopped()
+{
+    preparedBlockSize = 0;
+    chain.setProcessingActive (false);
+    inputMeter.readAndReset();
+    outputMeter.readAndReset();
+}
 
 void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* inputChannelData, int numInputChannels,
                                                     float* const* outputChannelData, int numOutputChannels,

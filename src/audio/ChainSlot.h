@@ -8,9 +8,9 @@
 // One effect in the chain: a plugin instance, a wet/dry crossfade and a dry
 // delay line that matches the plugin's latency (so the crossfade never combs).
 //
-// Created and prepared on the message thread. Once it has been posted to the
-// ChainProcessor, only the audio thread touches it until it comes back through
-// ChainProcessor::popRetired().
+// Created on the message thread. While IO is stopped, the engine may also
+// prepare/settle it from a device lifecycle callback. While IO runs, only the
+// audio thread touches it until it comes back through popRetired().
 struct ChainSlot
 {
     int id = 0;
@@ -21,8 +21,8 @@ struct ChainSlot
     bool bypassed = false;
 
     // Calls processor->prepareToPlay, reads its latency, prepares dryDelay and
-    // preallocates every buffer process() needs. Message thread only, never while
-    // the audio thread owns this slot. Defined in ChainProcessor.cpp (it uses
+    // preallocates every buffer process() needs. Only outside the IO callback,
+    // never concurrently with process(). Defined in ChainProcessor.cpp (it uses
     // ChainProcessor::kSlotFadeSeconds).
     void prepare (double sampleRate, int maxBlockSize);
 
@@ -49,5 +49,6 @@ struct ChainSlot
     // Preallocated in prepare(): the plugin processes a copy of the input here.
     juce::AudioBuffer<float> processBuffer;
     juce::MidiBuffer midi;
+    double preparedSampleRate = 0.0;
     int preparedBlockSize = 0;
 };

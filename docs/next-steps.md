@@ -2,6 +2,16 @@
 
 뼈대 구현(2026-11-18~19) 과정의 코드 리뷰에서 "다음 단계로 미룸"으로 분류된 항목입니다. 원문(영어) 그대로 둡니다.
 
+## 2026-11-19 백엔드 후속 수정
+
+- 장치가 없거나 정지했을 때는 `ChainProcessor::setProcessingActive(false)`로 명령과 진행 중인 페이드를 즉시 마무리한다. 플러그인을 실행하지 않으며, 제거한 인스턴스는 `popRetired()`를 통해 메시지 스레드에서 해제해 편집 창의 수명을 보장한다. 정지 중 반납 목록은 별도로 보관하므로 고정 큐 용량을 넘는 연속 편집도 가능하다.
+- `AudioEngine`이 시작/정지 상태를 전달한다. 장치 생명주기 콜백은 드라이버 스레드에서도 올 수 있으므로 `prepare/post/popRetired`를 제어용 mutex로 직렬화한다. `process()`와 IO 콜백은 이 mutex를 사용하지 않는다.
+- `PluginChain`은 `getProcessingSpec()`으로 엔진의 현재 설정을 읽는다. 준비 도중 장치가 바뀌는 경우도 `post(Insert)`에서 재확인한다. 기존 `setProcessingSpec()`은 엔진 최초 준비 전의 기본값으로 유지해 현재 프론트 호출과 호환된다.
+- 회귀 테스트: 장치 없이 256회 바이패스, 정지 중 128회 추가/삭제와 인스턴스 수명, 가득 찬 큐의 지연된 Insert를 포함한 정지/재시작, 드라이버 재준비와 명령 전송의 직렬화, 준비 도중 장치 설정 변경, 체인 전후 미터 값.
+- 검증 명령: `cmake --build build -j2`, `ctest --test-dir build --output-on-failure`, `cmake --build build/release -j2`, `ctest --test-dir build/release --output-on-failure`.
+- 검증 결과: Debug/Release 앱과 테스트 빌드 성공, 각각 테스트 46개 항목 통과(`ctest`: 1/1 성공). 실제 오디오 장치와 VST3 플러그인으로 듣는 검증은 미실시.
+- 수정 범위는 `src/audio`, `src/plugins/PluginChain.*`, 해당 테스트와 이 기록이다. 프론트 파일은 수정하지 않았다. 실행 중 플러그인 지연 변경 감지와 스캐너 관련 항목은 아래에 남아 있다.
+
 ## 리뷰에서 미룬 작은 문제들
 - Task 1: minor (deferred): CI cache key uses env JUCE_TAG while CMake hardcodes tag — can drift.
 - Task 1: minor (deferred): caching build/_deps also caches juce-build artifacts.
@@ -12,16 +22,16 @@
 - Task 2: minor (deferred): MIDI buffer fixed 2048 bytes; could realloc on audio thread for MIDI-heavy plugins.
 - Task 2: minor (deferred): suspendProcessing()/isSuspended() not honoured.
 - Task 2: minor (deferred): test position map static, never cleared.
-- Task 3: minor (deferred): prepare() is the queue consumer during re-prepare — T4 must call it only on message thread with no concurrent post().
+- [해결: 위 백엔드 후속 수정] Task 3: minor (deferred): prepare() is the queue consumer during re-prepare — T4 must call it only on message thread with no concurrent post().
 - Task 3: minor (deferred): re-prepare restarts output hard after total latency (device restart; small).
 - Task 3: minor (deferred): process() returns early for <2 channels, freezing fades (AudioEngine always passes 2).
 - Task 3: minor (deferred): deferred full-chain Insert blocks later commands until retired drains.
 - Task 3: minor (deferred): interleaving test gaps (SetBypass during Move, Move during Remove, Remove while fading in / awaitingDip, overlapping latency changes, unknown ids).
 - Task 3: minor (deferred): SetBypass on a removing slot is ignored (T5 must not expect it).
-- Task 4: minor (deferred): no test proves chain.process is called / metering order around chain (all tests use empty chain).
+- [해결: 위 백엔드 후속 수정] Task 4: minor (deferred): no test proves chain.process is called / metering order around chain (all tests use empty chain).
 - Task 4: minor (deferred): AudioDeviceManager member makes tests log ALSA seq error + JUCE MIDI jassert (Debug).
 - Task 4: minor (deferred): out-of-range test checks ch0 only; negative/0-input/unprepared paths untested.
-- Task 4: minor (deferred): header thread contract — prepareForTest only while no callback registered; aboutToStart may come from a driver thread on some backends → race with message-thread post() — final review should weigh.
+- [해결: 위 백엔드 후속 수정] Task 4: minor (deferred): header thread contract — prepareForTest only while no callback registered; aboutToStart may come from a driver thread on some backends → race with message-thread post() — final review should weigh.
 - Task 4: minor (deferred): block size 0 → 1-sample chunks; no ScopedNoDenormals.
 - Task 5: minor (deferred): stereo layout no fallback (disable aux buses on retry); instruments get "no stereo" msg.
 - Task 5: minor (deferred): cache written only after full scan.
@@ -31,14 +41,14 @@
 - Task 5: minor (deferred): loadCache during scan guarded only by jassert.
 - Task 5: minor (deferred): hanging plugin freezes UI during scan (accepted ruling).
 - Task 4: minor (deferred): -Wfloat-equal warnings in tests/AudioEngineTests.cpp (test output not pristine).
-- Task 6: minor (deferred): plugin added during async spec-sync gap prepared at old SR — fix: PluginChain reads ChainProcessor prepared SR/block getters.
+- [해결: 위 백엔드 후속 수정] Task 6: minor (deferred): plugin added during async spec-sync gap prepared at old SR — fix: PluginChain reads ChainProcessor prepared SR/block getters.
 - Task 6: minor (deferred): notice strip appearing/disappearing shifts rows (mis-click risk).
 - Task 6: minor (deferred): specific engine error replaced by generic hint after a timed notice.
 - Task 6: minor (deferred): selector allows multiple inputs; engine uses first — set maxAudioInputChannels=1 (matches global constraint "선택한 입력 채널 1개").
 - Task 6: minor (deferred): "Not modal" comment wrong for launchAsync; bypass button tooltip; redundant repaint.
 
 ## 최종 리뷰에서 다음 단계로 분류된 항목
-- With no audio device open, the command queue is never drained; after 64 edits every click shows "잠시 후 다시 시도하세요".
+- [해결: 위 백엔드 후속 수정] With no audio device open, the command queue is never drained; after 64 edits every click shows "잠시 후 다시 시도하세요".
 - Plugins that change latency at runtime are not tracked (dry path misaligns, total latency stale) — needs audioProcessorChanged listener + re-prepare.
 - Mic goes straight to output at launch (README warns to use headphones); monitoring policy is an open question (design.md §7).
 - JUCE silently falls back to default devices when the interface is unplugged — show a notice when the device name changes.

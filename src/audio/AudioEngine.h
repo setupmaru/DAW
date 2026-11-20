@@ -12,16 +12,13 @@
 // with one output channel only L is written).
 //
 // Threads: initialise/shutdown/prepareForTest/setInputChannel/getChain().post
-// run on the message thread. The IO callback runs on the audio thread and
-// never allocates, frees, locks or logs.
-// audioDeviceAboutToStart is called by JUCE on the message thread (from
-// AudioDeviceManager::addAudioCallback or a device restart), while no IO
-// callback is running, so ChainProcessor::prepare() (which must not run
-// concurrently with post() or process()) is safe to call from it.
+// run on the message thread. Lifecycle callbacks may also come from a driver
+// thread; JUCE excludes IO during them, and ChainProcessor serialises them
+// with message-thread edits. The IO callback never allocates, frees, locks or logs.
 class AudioEngine : public juce::AudioIODeviceCallback
 {
 public:
-    AudioEngine() = default;
+    AudioEngine();
     ~AudioEngine() override;
 
     // Opens the default device (1 input, 2 outputs). Returns an empty string on
@@ -34,7 +31,8 @@ public:
     juce::AudioDeviceManager& getDeviceManager() { return deviceManager; }
     ChainProcessor& getChain() { return chain; }
 
-    // Same preparation as audioDeviceAboutToStart, without a device.
+    // Same preparation/start as audioDeviceAboutToStart, without a device.
+    // Only with no real callback registered and no simulated IO in flight.
     void prepareForTest (double sampleRate, int blockSize);
 
     void setInputChannel (int index) { inputChannel.store (index); }

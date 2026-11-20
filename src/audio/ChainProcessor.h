@@ -7,6 +7,8 @@
 
 #include <array>
 #include <atomic>
+#include <mutex>
+#include <vector>
 
 enum class ChainCommandType { Insert, Remove, Move, SetBypass };
 
@@ -42,8 +44,10 @@ struct ChainCommand
 //    retired queue is full, or too many slots are still fading out, the slot
 //    (or the command) waits and is retried every block: no slot is ever lost.
 //
-// Threads: prepare/post/popRetired on the message thread, process on the audio
-// thread. process() and everything it calls never allocates, frees, locks or logs.
+// Threads: post/popRetired on the message thread, process on the audio thread.
+// Device lifecycle calls may run on a driver thread, with IO stopped. A control
+// mutex serialises those calls with post/popRetired; process never takes it.
+// process() and everything it calls never allocates, frees, locks or logs.
 class ChainProcessor
 {
 public:
@@ -55,10 +59,17 @@ public:
     ChainProcessor() = default;
     ~ChainProcessor();   // deletes every slot it still owns (call with audio stopped)
 
-    // Only while audio is stopped, and never concurrently with post() (call it
-    // on the message thread): it re-prepares every slot the chain owns, including
-    // slots still waiting in the command queue, which it briefly drains and refills.
+    // Only while IO is stopped. Serialised with post(): re-prepares every slot,
+    // including Inserts still waiting in the queue.
     void prepare (double sampleRate, int maxBlockSize);
+    struct ProcessingSpec { double sampleRate; int maxBlockSize; };
+    ProcessingSpec getProcessingSpec() const;             // { 0, 0 } before prepare()
+
+    // Only while IO is stopped, before its first block / after its last block.
+    // Stopping settles all edits without running plugins; further posts apply
+    // immediately until restarted. Removed slots still await popRetired(), so
+    // editors close on the message thread before processors are destroyed.
+    void setProcessingActive (bool active);
     void process (juce::AudioBuffer<float>& stereo);      // audio thread, 2 channels
     bool post (const ChainCommand&);                      // message thread; false when the queue is full
     ChainSlot* popRetired();                              // message thread; nullptr if none. Caller deletes
@@ -66,6 +77,8 @@ public:
     int getNumActiveSlots() const;                        // live slots (not being removed)
 
 private:
+    void settleStoppedChanges();                          // control mutex held, IO stopped
+    void collectStoppedRetired();                         // preserves slots for the message thread
     void applyQueuedCommands() noexcept;
     bool applyCommand (const ChainCommand&) noexcept;   // false: retry this command next block
     bool insertSlot (ChainSlot* slot, int index) noexcept;
@@ -88,6 +101,10 @@ private:
 
     LockFreeQueue<ChainCommand, kCommandQueueCapacity> commands;
     LockFreeQueue<ChainSlot*, kRetiredQueueCapacity> retired;
+
+    mutable std::mutex controlMutex;
+    bool processingActive = true;                        // standalone users drive process() themselves
+    std::vector<ChainSlot*> stoppedRetired;               // only outside the IO callback
 
     // Audio-thread owned. Fixed size: no allocation when the chain changes.
     // `slots` is what is processed: live slots plus slots fading out before

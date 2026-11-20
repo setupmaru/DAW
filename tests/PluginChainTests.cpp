@@ -1,6 +1,7 @@
 #include "TestProcessors.h"
 
 #include "plugins/PluginChain.h"
+#include "audio/AudioEngine.h"
 
 namespace
 {
@@ -37,6 +38,26 @@ public:
 
 private:
     float offset;
+};
+
+// Simulates a device restart between reading the spec and posting an Insert.
+class RestartDuringPrepareProcessor : public GainProcessor
+{
+public:
+    explicit RestartDuringPrepareProcessor (ChainProcessor& c) : GainProcessor (0.5f), chain (c) {}
+
+    void prepareToPlay (double, int) override
+    {
+        if (! restarted)
+        {
+            restarted = true;
+            chain.prepare (44100.0, 128);
+        }
+    }
+
+private:
+    ChainProcessor& chain;
+    bool restarted = false;
 };
 
 // Runs one block of constant `input` (both channels) and returns the left
@@ -118,9 +139,102 @@ struct PluginChainTests : public juce::UnitTest
         testRetiredSlotsAreDeleted();
         testRetiredSlotStillInModelIsDropped();
         testDestructorDeletesRetiredSlots();
+        testEditsWithoutDevice();
+        testStoppedRemovalsPreserveLifetime();
+        testNewSlotUsesEngineSpec();
+        testRestartDuringSlotPreparation();
     }
 
     //==========================================================================
+    void testEditsWithoutDevice()
+    {
+        beginTest ("edits without a device do not fill the command queue and survive startup");
+
+        AudioEngine engine;
+        juce::AudioPluginFormatManager formats;
+        PluginChain model (engine.getChain(), formats);
+        juce::StringArray errors;
+        model.onError = [&] (const juce::String& message) { errors.add (message); };
+        expect (model.addProcessor (std::make_unique<GainProcessor> (0.5f), "Gain"));
+        expect (model.addProcessor (std::make_unique<OffsetProcessor> (0.25f), "Offset"));
+        const int gainId = model.getEntries()[0].id;
+        int accepted = 0;
+        for (int i = 0; i < 256; ++i)
+            if (model.setBypassed (gainId, i % 2 == 0))
+                ++accepted;
+        expectEquals (accepted, 256);
+        expect (model.move (model.getEntries()[1].id, 0));
+        expectEquals (engine.getChain().getNumActiveSlots(), 2);
+        expect (errors.isEmpty(), "no queue-full error without an audio callback");
+
+        engine.prepareForTest (44100.0, 128);
+        juce::AudioBuffer<float> input (1, kBlock), output (2, kBlock);
+        juce::FloatVectorOperations::fill (input.getWritePointer (0), 1.0f, kBlock);
+        engine.audioDeviceIOCallbackWithContext (input.getArrayOfReadPointers(), 1,
+                                                 output.getArrayOfWritePointers(), 2, kBlock, {});
+        for (int ch = 0; ch < 2; ++ch)
+            expectWithinAbsoluteError (output.getSample (ch, kBlock - 1), 0.625f, 1.0e-5f,
+                                       "startup preserves order and the last bypass state");
+    }
+
+    void testStoppedRemovalsPreserveLifetime()
+    {
+        beginTest ("stopped edits exceed both queue capacities without deleting processors before onChanged");
+
+        AudioEngine engine;
+        engine.prepareForTest (kSampleRate, kBlock);
+        juce::AudioPluginFormatManager formats;
+        PluginChain model (engine.getChain(), formats);
+        CountingProcessor::destroyed() = 0;
+        expect (model.addProcessor (std::make_unique<CountingProcessor>(), "Queued"));
+        // Stop with the Insert still queued, before any audio block has run.
+        engine.audioDeviceStopped();
+        expectEquals (engine.getChain().getNumActiveSlots(), 1);
+
+        bool aliveDuringChange = true;
+        model.onChanged = [&] { aliveDuringChange = aliveDuringChange && CountingProcessor::destroyed() == 0; };
+        int removed = 0;
+        for (int i = 0; i < 128; ++i)
+        {
+            if (model.getEntries().empty())
+                expect (model.addProcessor (std::make_unique<CountingProcessor>(), "Stopped"));
+            if (! model.getEntries().empty() && model.remove (model.getEntries()[0].id))
+                ++removed;
+        }
+        expectEquals (removed, 128);
+        expect (aliveDuringChange, "editors can close before processor destruction");
+        expectEquals (CountingProcessor::destroyed(), 0, "only the message-thread retirement pump deletes slots");
+        expectEquals (engine.getChain().getNumActiveSlots(), 0);
+        model.pumpRetired();
+        expectEquals (CountingProcessor::destroyed(), 128);
+        expect (model.getEntries().empty());
+    }
+
+    void testNewSlotUsesEngineSpec()
+    {
+        beginTest ("new slots use the engine spec before the UI receives its change notification");
+        Fixture f;
+        f.chain.prepare (44100.0, 128);
+        auto processor = std::make_unique<GainProcessor> (0.5f);
+        auto* raw = processor.get();
+        expect (f.model->addProcessor (std::move (processor), "Gain"));
+        expectEquals (raw->getSampleRate(), 44100.0);
+        expectEquals (raw->getBlockSize(), 128);
+    }
+
+    void testRestartDuringSlotPreparation()
+    {
+        beginTest ("an Insert is re-prepared if the device restarts during slot creation");
+        Fixture f;
+        auto processor = std::make_unique<RestartDuringPrepareProcessor> (f.chain);
+        auto* raw = processor.get();
+        expect (f.model->addProcessor (std::move (processor), "Restart"));
+        expectEquals (raw->getSampleRate(), 44100.0);
+        expectEquals (raw->getBlockSize(), 128);
+        runBlocks (f.chain, kSettleBlocks);
+        expectWithinAbsoluteError (runConstant (f.chain, 1.0f), 0.5f, 1.0e-5f);
+    }
+
     void testAddRemoveMoveUpdatesModel()
     {
         beginTest ("add/remove/move update the model in order");

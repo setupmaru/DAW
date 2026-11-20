@@ -55,6 +55,13 @@ void PluginChain::setProcessingSpec (double newSampleRate, int maxBlockSize)
     blockSize = maxBlockSize;
 }
 
+ChainProcessor::ProcessingSpec PluginChain::processingSpec() const
+{
+    const auto spec = chain.getProcessingSpec();
+    return spec.sampleRate > 0.0 && spec.maxBlockSize > 0
+        ? spec : ChainProcessor::ProcessingSpec { sampleRate, blockSize };
+}
+
 bool PluginChain::addProcessor (std::unique_ptr<juce::AudioProcessor> processor, const juce::String& name)
 {
     JUCE_ASSERT_MESSAGE_THREAD
@@ -80,7 +87,8 @@ bool PluginChain::addProcessor (std::unique_ptr<juce::AudioProcessor> processor,
     auto slot = std::make_unique<ChainSlot>();
     slot->id = nextId;
     slot->processor = std::move (processor);
-    slot->prepare (sampleRate, blockSize);
+    const auto spec = processingSpec();
+    slot->prepare (spec.sampleRate, spec.maxBlockSize);
 
     ChainCommand cmd { ChainCommandType::Insert };
     cmd.slotId = slot->id;
@@ -107,8 +115,9 @@ void PluginChain::addPlugin (const juce::PluginDescription& description)
     // The callback runs on the message thread, possibly after this object is
     // gone; the weak reference catches that and the new instance is simply
     // deleted. A pending creation has no id yet, so remove() cannot target it.
+    const auto spec = processingSpec();
     formatManager.createPluginInstanceAsync (
-        description, sampleRate, blockSize,
+        description, spec.sampleRate, spec.maxBlockSize,
         [weak = juce::WeakReference<PluginChain> (this), name = description.name]
         (std::unique_ptr<juce::AudioPluginInstance> instance, const juce::String& message)
         {

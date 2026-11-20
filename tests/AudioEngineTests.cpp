@@ -67,6 +67,34 @@ struct AudioEngineTests : public juce::UnitTest
             expectWithinAbsoluteError (engine.getOutputMeter().readAndReset(), 0.5f, 0.01f);
         }
 
+        beginTest ("the callback processes the chain between the input and output meters");
+        {
+            AudioEngine engine;
+            engine.prepareForTest (48000.0, kBlock);
+            auto slot = makeSlot (1, std::make_unique<GainProcessor> (0.25f), 48000.0, kBlock);
+            expect (engine.getChain().post ({ ChainCommandType::Insert, 1, 0, false, slot.get() }));
+            slot.release();
+
+            juce::AudioBuffer<float> in (1, kBlock), out (2, kBlock);
+            juce::FloatVectorOperations::fill (in.getWritePointer (0), 0.8f, kBlock);
+            for (int i = 0; i < 10; ++i)
+                run (engine, in, out);
+
+            engine.getInputMeter().readAndReset();
+            engine.getOutputMeter().readAndReset();
+            run (engine, in, out);
+            expectWithinAbsoluteError (engine.getInputMeter().readAndReset(), 0.8f, 1.0e-5f);
+            expectWithinAbsoluteError (engine.getOutputMeter().readAndReset(), 0.2f, 1.0e-5f);
+            for (int ch = 0; ch < 2; ++ch)
+                expectWithinAbsoluteError (out.getSample (ch, kBlock - 1), 0.2f, 1.0e-5f);
+
+            engine.audioDeviceStopped();
+            run (engine, in, out);
+            expectEquals (out.getMagnitude (0, kBlock), 0.0f, "a stopped engine outputs silence");
+            expectEquals (engine.getInputMeter().readAndReset(), 0.0f);
+            expectEquals (engine.getOutputMeter().readAndReset(), 0.0f);
+        }
+
         beginTest ("block larger than prepared is processed in chunks");
         {
             AudioEngine engine;

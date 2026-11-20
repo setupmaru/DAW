@@ -32,6 +32,7 @@ void ChainSlot::prepare (double sampleRate, int maxBlockSize)
     midi.ensureSize (2048);
     midi.clear();
 
+    preparedSampleRate = sampleRate;
     preparedBlockSize = maxBlockSize;
 }
 
@@ -52,11 +53,15 @@ ChainProcessor::~ChainProcessor()
     ChainSlot* slot = nullptr;
     while (retired.pop (slot))
         delete slot;
+
+    for (auto* stoppedSlot : stoppedRetired)
+        delete stoppedSlot;
 }
 
 void ChainProcessor::prepare (double sampleRate, int maxBlockSize)
 {
     jassert (sampleRate > 0.0 && maxBlockSize > 0);
+    const std::lock_guard<std::mutex> lock (controlMutex);
 
     preparedSampleRate = sampleRate;
     preparedBlockSize = maxBlockSize;
@@ -72,7 +77,7 @@ void ChainProcessor::prepare (double sampleRate, int maxBlockSize)
     }
 
     // Slots still on their way in were prepared for the old device. Audio is
-    // stopped, so this (message) thread may also act as the queue's consumer:
+    // stopped, and post() is excluded, so this thread can also be the consumer:
     // take every command out, re-prepare its slot, and put it back in order.
     if (hasDeferredCommand && deferredCommand.slot != nullptr)
         deferredCommand.slot->prepare (sampleRate, maxBlockSize);
@@ -102,13 +107,87 @@ void ChainProcessor::prepare (double sampleRate, int maxBlockSize)
 
 bool ChainProcessor::post (const ChainCommand& cmd)
 {
-    return commands.push (cmd);
+    const std::lock_guard<std::mutex> lock (controlMutex);
+
+    // The device may have restarted while the message thread was creating the
+    // slot. Correct its spec before ownership passes to the audio thread.
+    if (cmd.type == ChainCommandType::Insert && cmd.slot != nullptr
+        && preparedSampleRate > 0.0
+        && (! juce::exactlyEqual (cmd.slot->preparedSampleRate, preparedSampleRate)
+            || cmd.slot->preparedBlockSize != preparedBlockSize))
+        cmd.slot->prepare (preparedSampleRate, preparedBlockSize);
+
+    if (! commands.push (cmd))
+        return false;
+
+    if (! processingActive)
+        settleStoppedChanges();
+
+    return true;
 }
 
 ChainSlot* ChainProcessor::popRetired()
 {
+    const std::lock_guard<std::mutex> lock (controlMutex);
+    if (! stoppedRetired.empty())
+    {
+        auto* slot = stoppedRetired.back();
+        stoppedRetired.pop_back();
+        return slot;
+    }
+
     ChainSlot* slot = nullptr;
     return retired.pop (slot) ? slot : nullptr;
+}
+
+ChainProcessor::ProcessingSpec ChainProcessor::getProcessingSpec() const
+{
+    const std::lock_guard<std::mutex> lock (controlMutex);
+    return { preparedSampleRate, preparedBlockSize };
+}
+
+void ChainProcessor::setProcessingActive (bool active)
+{
+    const std::lock_guard<std::mutex> lock (controlMutex);
+    processingActive = active;
+
+    if (! active)
+        settleStoppedChanges();
+}
+
+void ChainProcessor::collectStoppedRetired()
+{
+    ChainSlot* slot = nullptr;
+    while (retired.pop (slot))
+        stoppedRetired.push_back (slot);
+}
+
+void ChainProcessor::settleStoppedChanges()
+{
+    // No audio is being heard: finish fades and structural changes directly.
+    // Keep retired processors alive for the message-thread pump even when a
+    // burst of edits exceeds the realtime retired queue's fixed capacity.
+    do
+    {
+        collectStoppedRetired();
+        outputGain.setCurrentAndTargetValue (0.0f);
+        dipHoldSamples = 0;
+        applyQueuedCommands();
+        collectStoppedRetired();
+        for (int i = 0; i < numSlots; ++i)
+            slots[(size_t) i]->wet.setCurrentAndTargetValue (0.0f);
+
+        applyPendingChanges();
+        collectStoppedRetired();
+    }
+    while (hasDeferredCommand || commands.getNumReady() > 0);
+
+    for (int i = 0; i < numSlots; ++i)
+        slots[(size_t) i]->wet.setCurrentAndTargetValue (slots[(size_t) i]->targetWet());
+
+    outputGain.setCurrentAndTargetValue (1.0f);
+    dipHoldSamples = 0;
+    publishState();
 }
 
 int ChainProcessor::getTotalLatencySamples() const

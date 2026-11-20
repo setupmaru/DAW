@@ -38,8 +38,8 @@ public:
     PluginChain (ChainProcessor&, juce::AudioPluginFormatManager&);
     ~PluginChain() override;
 
-    // Sample rate and block size used to prepare new slots. Keep it equal to
-    // the values the AudioEngine prepares the ChainProcessor with.
+    // Fallback spec before the engine has ever been prepared. Afterwards new
+    // slots always read the engine's current spec, without waiting for the UI.
     void setProcessingSpec (double sampleRate, int maxBlockSize);
 
     // Sets a stereo in/out layout, prepares a slot and posts it to the end of
@@ -73,6 +73,7 @@ private:
     int indexOf (int id) const;
     void changed();
     void error (const juce::String& message);
+    ChainProcessor::ProcessingSpec processingSpec() const;
 
     ChainProcessor& chain;
     juce::AudioPluginFormatManager& formatManager;

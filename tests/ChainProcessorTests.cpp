@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <thread>
 
 namespace
 {
@@ -66,9 +67,113 @@ struct ChainProcessorTests : public juce::UnitTest
         testMovesApplyInCommandOrder();
         testInsertDuringRemoveFadeIsNotRetired();
         testPhysicalArrayFullDefersInsert();
+        testStopSettlesDeferredChanges();
+        testDevicePrepareExcludesPosts();
     }
 
     //==========================================================================
+    void testStopSettlesDeferredChanges()
+    {
+        beginTest ("stopping settles a full physical chain and deferred Insert without processing audio");
+        ChainProcessor chain;
+        chain.prepare (kSampleRate, kBlock);
+        for (int id = 1; id <= ChainProcessor::kMaxSlots; ++id)
+            expect (postInsert (chain, id, std::make_unique<FixedDelayProcessor> (480), id - 1));
+        runSine (chain, 40);
+
+        // Fill the retirement queue so removed slots occupy physical storage.
+        for (int id = 100; id < 100 + ChainProcessor::kRetiredQueueCapacity; ++id)
+        {
+            expect (postInsert (chain, id, std::make_unique<GainProcessor> (1.0f)));
+            runSine (chain, 1);
+        }
+        for (int id = 1; id <= ChainProcessor::kMaxSlots; ++id)
+        {
+            expect (postRemove (chain, id));
+            expect (postInsert (chain, id + 16, std::make_unique<GainProcessor> (0.5f), id - 1));
+        }
+        runSine (chain, 1);
+        expect (postRemove (chain, 17));
+        expect (postInsert (chain, 33, std::make_unique<InvertProcessor>(), 15));
+        runSine (chain, 1); // Insert 33 is deferred behind the 32 physical slots.
+
+        chain.setProcessingActive (false);
+        expectEquals (chain.getNumActiveSlots(), ChainProcessor::kMaxSlots);
+        expectEquals (chain.getTotalLatencySamples(), 0);
+        auto ids = drainRetired (chain);
+        std::sort (ids.begin(), ids.end());
+        std::vector<int> expected;
+        for (int id = 1; id <= 17; ++id)
+            expected.push_back (id);
+        for (int id = 100; id < 100 + ChainProcessor::kRetiredQueueCapacity; ++id)
+            expected.push_back (id);
+        expect (ids == expected, "all removals and rejected inserts retire exactly once");
+
+        chain.prepare (44100.0, 128);
+        chain.setProcessingActive (true);
+        juce::AudioBuffer<float> buffer (2, 128);
+        for (int ch = 0; ch < 2; ++ch)
+            juce::FloatVectorOperations::fill (buffer.getWritePointer (ch), 0.5f, 128);
+        chain.process (buffer);
+        expectWithinAbsoluteError (buffer.getSample (0, 127), -0.5f / 32768.0f, 1.0e-7f);
+    }
+
+    void testDevicePrepareExcludesPosts()
+    {
+        beginTest ("device re-prepare serialises with the command producer");
+        class BlockingProcessor : public GainProcessor
+        {
+        public:
+            BlockingProcessor() : GainProcessor (1.0f) {}
+            void prepareToPlay (double, int) override
+            {
+                if (block)
+                {
+                    entered.signal();
+                    release.wait();
+                }
+            }
+            bool block = false;
+            juce::WaitableEvent entered, release;
+        };
+
+        ChainProcessor chain;
+        chain.prepare (kSampleRate, kBlock);
+        auto processor = std::make_unique<BlockingProcessor>();
+        auto* raw = processor.get();
+        expect (postInsert (chain, 1, std::move (processor)));
+        runSine (chain, 10);
+        auto incoming = makeSlot (2, std::make_unique<GainProcessor> (0.5f), kSampleRate, kBlock);
+        raw->block = true;
+        std::thread lifecycle ([&] { chain.prepare (44100.0, 128); });
+        expect (raw->entered.wait (1000), "device re-prepare entered the plugin");
+
+        juce::WaitableEvent posted;
+        bool accepted = false;
+        // A single producer stands in for the message thread while this test
+        // thread releases the simulated device callback.
+        std::thread producer ([&]
+        {
+            accepted = chain.post ({ ChainCommandType::Insert, 2, 1, false, incoming.get() });
+            posted.signal();
+        });
+        const bool postedDuringPrepare = posted.wait (30);
+        raw->release.signal();
+        lifecycle.join();
+        producer.join();
+        raw->block = false;
+        expect (! postedDuringPrepare, "queue producer must wait while lifecycle consumes/re-fills the queue");
+        expect (accepted);
+        if (accepted)
+        {
+            expectEquals (incoming->processor->getSampleRate(), 44100.0);
+            expectEquals (incoming->processor->getBlockSize(), 128);
+            incoming.release();
+        }
+        runSine (chain, 10, 0.25f, 440.0, 44100.0, 128);
+        expectEquals (chain.getNumActiveSlots(), 2);
+    }
+
     bool postInsert (ChainProcessor& chain, int id, std::unique_ptr<juce::AudioProcessor> processor,
                      int index = 0, bool bypassed = false)
     {
