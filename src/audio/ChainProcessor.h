@@ -45,8 +45,11 @@ struct ChainCommand
 //    (or the command) waits and is retried every block: no slot is ever lost.
 //
 // Threads: post/popRetired on the message thread, process on the audio thread.
-// Device lifecycle calls may run on a driver thread, with IO stopped. A control
-// mutex serialises those calls with post/popRetired; process never takes it.
+// prepare is message-thread only. Only setProcessingActive(false) may run on a
+// driver thread, with IO stopped. A control mutex serialises it with edits;
+// process never takes it. Plugin callbacks must defer calls into this class
+// (e.g. with AsyncUpdater): prepareToPlay can synchronously notify listeners
+// while prepare holds the non-recursive control mutex.
 // process() and everything it calls never allocates, frees, locks or logs.
 class ChainProcessor
 {
@@ -59,7 +62,7 @@ public:
     ChainProcessor() = default;
     ~ChainProcessor();   // deletes every slot it still owns (call with audio stopped)
 
-    // Only while IO is stopped. Serialised with post(): re-prepares every slot,
+    // Message thread only, while IO is stopped. Re-prepares every slot,
     // including Inserts still waiting in the queue.
     void prepare (double sampleRate, int maxBlockSize);
     struct ProcessingSpec { double sampleRate; int maxBlockSize; };

@@ -68,7 +68,8 @@ struct ChainProcessorTests : public juce::UnitTest
         testInsertDuringRemoveFadeIsNotRetired();
         testPhysicalArrayFullDefersInsert();
         testStopSettlesDeferredChanges();
-        testDevicePrepareExcludesPosts();
+        testDriverStopSerialisesWithPosts();
+        testStopDuringMoveAndLatencyDip();
     }
 
     //==========================================================================
@@ -90,7 +91,10 @@ struct ChainProcessorTests : public juce::UnitTest
         for (int id = 1; id <= ChainProcessor::kMaxSlots; ++id)
         {
             expect (postRemove (chain, id));
-            expect (postInsert (chain, id + 16, std::make_unique<GainProcessor> (0.5f), id - 1));
+            if (id == 2)
+                expect (postInsert (chain, id + 16, std::make_unique<OffsetProcessor> (0.6f), id - 1));
+            else
+                expect (postInsert (chain, id + 16, std::make_unique<GainProcessor> (0.5f), id - 1));
         }
         runSine (chain, 1);
         expect (postRemove (chain, 17));
@@ -115,63 +119,77 @@ struct ChainProcessorTests : public juce::UnitTest
         for (int ch = 0; ch < 2; ++ch)
             juce::FloatVectorOperations::fill (buffer.getWritePointer (ch), 0.5f, 128);
         chain.process (buffer);
-        expectWithinAbsoluteError (buffer.getSample (0, 127), -0.5f / 32768.0f, 1.0e-7f);
+        expectWithinAbsoluteError (buffer.getSample (0, 127), -1.1f / 16384.0f, 1.0e-9f);
     }
 
-    void testDevicePrepareExcludesPosts()
+    void testDriverStopSerialisesWithPosts()
     {
-        beginTest ("device re-prepare serialises with the command producer");
-        class BlockingProcessor : public GainProcessor
-        {
-        public:
-            BlockingProcessor() : GainProcessor (1.0f) {}
-            void prepareToPlay (double, int) override
-            {
-                if (block)
-                {
-                    entered.signal();
-                    release.wait();
-                }
-            }
-            bool block = false;
-            juce::WaitableEvent entered, release;
-        };
-
+        beginTest ("driver stop serialises with message-thread edits without preparing plugins off-thread");
         ChainProcessor chain;
         chain.prepare (kSampleRate, kBlock);
-        auto processor = std::make_unique<BlockingProcessor>();
-        auto* raw = processor.get();
-        expect (postInsert (chain, 1, std::move (processor)));
-        runSine (chain, 10);
-        auto incoming = makeSlot (2, std::make_unique<GainProcessor> (0.5f), kSampleRate, kBlock);
-        raw->block = true;
-        std::thread lifecycle ([&] { chain.prepare (44100.0, 128); });
-        expect (raw->entered.wait (1000), "device re-prepare entered the plugin");
-
-        juce::WaitableEvent posted;
-        bool accepted = false;
-        // A single producer stands in for the message thread while this test
-        // thread releases the simulated device callback.
-        std::thread producer ([&]
+        chain.setProcessingActive (false);
+        juce::WaitableEvent started;
+        std::thread driver ([&]
         {
-            accepted = chain.post ({ ChainCommandType::Insert, 2, 1, false, incoming.get() });
-            posted.signal();
+            started.signal();
+            for (int i = 0; i < 512; ++i)
+                chain.setProcessingActive (false);
         });
-        const bool postedDuringPrepare = posted.wait (30);
-        raw->release.signal();
-        lifecycle.join();
-        producer.join();
-        raw->block = false;
-        expect (! postedDuringPrepare, "queue producer must wait while lifecycle consumes/re-fills the queue");
-        expect (accepted);
-        if (accepted)
+        expect (started.wait (1000));
+        for (int id = 1; id <= 256; ++id)
         {
-            expectEquals (incoming->processor->getSampleRate(), 44100.0);
-            expectEquals (incoming->processor->getBlockSize(), 128);
-            incoming.release();
+            expect (postInsert (chain, id, std::make_unique<GainProcessor> (0.5f)));
+            expect (postRemove (chain, id));
         }
-        runSine (chain, 10, 0.25f, 440.0, 44100.0, 128);
-        expectEquals (chain.getNumActiveSlots(), 2);
+        driver.join();
+        expectEquals (chain.getNumActiveSlots(), 0);
+        auto ids = drainRetired (chain);
+        std::sort (ids.begin(), ids.end());
+        expectEquals ((int) ids.size(), 256);
+        for (size_t i = 0; i < ids.size(); ++i)
+            expectEquals (ids[i], (int) i + 1);
+
+        // Repeated stopped edits must not weaken the live-slot limit.
+        for (int id = 1; id <= 17; ++id)
+            expect (postInsert (chain, 1000 + id, std::make_unique<GainProcessor> (1.0f), id - 1));
+        expectEquals (chain.getNumActiveSlots(), 16);
+        expect (drainRetired (chain) == std::vector<int> { 1017 });
+    }
+
+    void testStopDuringMoveAndLatencyDip()
+    {
+        beginTest ("stop during Move fade settles noncommuting order and restarts without a leftover fade");
+        ChainProcessor chain;
+        chain.prepare (kSampleRate, kBlock);
+        expect (postInsert (chain, 1, std::make_unique<GainProcessor> (0.5f), 0));
+        expect (postInsert (chain, 2, std::make_unique<OffsetProcessor> (0.6f), 1));
+        runSine (chain, 20);
+        expect (postMove (chain, 2, 0));
+        runSine (chain, 1); // 256 samples < 960-sample Move fade.
+        chain.setProcessingActive (false);
+        chain.prepare (kSampleRate, kBlock);
+        chain.setProcessingActive (true);
+        const auto start = sinePosition (chain);
+        const auto out = runSine (chain, 10);
+        expectLessThan (maxStep (out), kClickThreshold);
+        float worst = 0.0f;
+        for (size_t i = 0; i < out.size(); ++i)
+            worst = std::max (worst, std::abs (out[i] - 0.5f * (sineSample (start + (std::int64_t) i) + 0.6f)));
+        expectLessThan (worst, kTolerance, "new order applies from the first restarted sample");
+
+        beginTest ("stop settles a latency Insert still awaiting the output dip");
+        expect (postInsert (chain, 3, std::make_unique<FixedDelayProcessor> (480), 0));
+        runSine (chain, 1); // Output dip needs 480 samples; slot is awaitingDip.
+        chain.setProcessingActive (false);
+        expectEquals (chain.getTotalLatencySamples(), 480);
+        expectEquals (chain.getNumActiveSlots(), 3);
+        expect (postRemove (chain, 3));
+        expectEquals (chain.getTotalLatencySamples(), 0);
+        expect (drainRetired (chain) == std::vector<int> { 3 });
+        chain.prepare (kSampleRate, kBlock);
+        chain.setProcessingActive (true);
+        expectLastBlockMatches (chain, [] (std::int64_t n) { return 0.5f * (sineSample (n) + 0.6f); },
+                                "restart clears awaitingDip and output-dip state");
     }
 
     bool postInsert (ChainProcessor& chain, int id, std::unique_ptr<juce::AudioProcessor> processor,

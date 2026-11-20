@@ -14,6 +14,9 @@ struct AudioEngineTests : public juce::UnitTest
 
     void runTest() override
     {
+        testOutputMute();
+        testDeviceErrorSettlesEdits();
+
         // The engine copies samples unchanged, so exact float comparison is
         // intended here (juce::exactlyEqual avoids -Wfloat-equal).
         beginTest ("mono input is copied to both outputs");
@@ -128,6 +131,87 @@ struct AudioEngineTests : public juce::UnitTest
             run (engine, in, mono);
             expectEquals (mono.getSample (0, 10), 0.5f);
         }
+    }
+
+    void testOutputMute()
+    {
+        beginTest ("output mute fades both ways, keeps processing, and meters actual output");
+        class ProcessingCounter : public GainProcessor
+        {
+        public:
+            ProcessingCounter() : GainProcessor (0.5f) {}
+            using GainProcessor::processBlock;
+            void processBlock (juce::AudioBuffer<float>& b, juce::MidiBuffer& m) override
+            { ++blocks; GainProcessor::processBlock (b, m); }
+            int blocks = 0;
+        };
+        AudioEngine engine;
+        expect (! engine.isOutputMuted());
+        engine.prepareForTest (48000.0, 64); // Also exercise multi-chunk fades.
+        auto counter = std::make_unique<ProcessingCounter>();
+        auto* raw = counter.get();
+        auto slot = makeSlot (1, std::move (counter), 48000.0, 64);
+        expect (engine.getChain().post ({ ChainCommandType::Insert, 1, 0, false, slot.get() }));
+        slot.release();
+        juce::AudioBuffer<float> in (1, kBlock), out (2, kBlock);
+        std::vector<float> samples;
+        int position = 0;
+        const auto blocks = [&] (int count)
+        {
+            for (int b = 0; b < count; ++b)
+            {
+                for (int i = 0; i < kBlock; ++i)
+                    in.setSample (0, i, sineSample (position++));
+                run (engine, in, out);
+                samples.insert (samples.end(), out.getReadPointer (0), out.getReadPointer (0) + kBlock);
+            }
+        };
+        blocks (10);
+        engine.setOutputMuted (true);
+        expect (engine.isOutputMuted());
+        blocks (4);
+        for (int ch = 0; ch < 2; ++ch)
+            expectEquals (out.getMagnitude (ch, 0, kBlock), 0.0f);
+        engine.getInputMeter().readAndReset();
+        engine.getOutputMeter().readAndReset();
+        const int countBefore = raw->blocks;
+        blocks (1);
+        expect (raw->blocks > countBefore, "muted processors still run");
+        expectGreaterThan (engine.getInputMeter().readAndReset(), 0.7f);
+        expectEquals (engine.getOutputMeter().readAndReset(), 0.0f);
+        engine.setOutputMuted (false);
+        blocks (4);
+        expectLessThan (maxStep (samples), 0.06f);
+        for (int ch = 0; ch < 2; ++ch)
+            expectWithinAbsoluteError (out.getSample (ch, kBlock - 1),
+                                       0.5f * in.getSample (0, kBlock - 1), 1.0e-6f);
+
+        beginTest ("mute set before startup is silent from the first sample, including restart");
+        AudioEngine initiallyMuted;
+        initiallyMuted.setOutputMuted (true);
+        initiallyMuted.prepareForTest (48000.0, kBlock);
+        run (initiallyMuted, in, out);
+        expectEquals (out.getMagnitude (0, kBlock), 0.0f);
+        expectEquals (initiallyMuted.getOutputMeter().readAndReset(), 0.0f);
+        expectGreaterThan (initiallyMuted.getInputMeter().readAndReset(), 0.7f);
+        initiallyMuted.audioDeviceStopped();
+        initiallyMuted.prepareForTest (44100.0, 128);
+        run (initiallyMuted, in, out);
+        expectEquals (out.getMagnitude (0, kBlock), 0.0f);
+    }
+
+    void testDeviceErrorSettlesEdits()
+    {
+        beginTest ("device error without a stop callback silences IO and settles more than 64 edits");
+        AudioEngine engine;
+        engine.prepareForTest (48000.0, kBlock);
+        engine.audioDeviceError ("simulated start failure");
+        for (int i = 0; i < 128; ++i)
+            expect (engine.getChain().post ({ ChainCommandType::SetBypass, 999, 0, true }));
+        juce::AudioBuffer<float> in (1, kBlock), out (2, kBlock);
+        juce::FloatVectorOperations::fill (in.getWritePointer (0), 0.5f, kBlock);
+        run (engine, in, out);
+        expectEquals (out.getMagnitude (0, kBlock), 0.0f);
     }
 
     static void run (AudioEngine& engine, juce::AudioBuffer<float>& in, juce::AudioBuffer<float>& out)

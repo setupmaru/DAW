@@ -27,9 +27,26 @@ bool setStereoLayout (juce::AudioProcessor& processor)
 }
 } // namespace
 
+struct PluginChain::RestoreState
+{
+    struct Item
+    {
+        juce::PluginDescription description;
+        juce::MemoryBlock state;
+        bool bypassed = false;
+    };
+    std::vector<Item> items;
+    size_t next = 0;
+    bool clearing = true, creating = false;
+    std::unique_ptr<ChainSlot> pending;
+    RestoreResult result;
+    juce::StringArray overflowNames;
+    std::function<void (RestoreResult)> onDone;
+};
+
 //==============================================================================
-PluginChain::PluginChain (ChainProcessor& c, juce::AudioPluginFormatManager& f)
-    : chain (c), formatManager (f)
+PluginChain::PluginChain (ChainProcessor& c, juce::AudioPluginFormatManager& f, ProcessorFactory factory)
+    : processorFactory (std::move (factory)), chain (c), formatManager (f)
 {
     startTimerHz (kTimerHz);
 }
@@ -63,6 +80,20 @@ ChainProcessor::ProcessingSpec PluginChain::processingSpec() const
 }
 
 bool PluginChain::addProcessor (std::unique_ptr<juce::AudioProcessor> processor, const juce::String& name)
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+    if (isRestoring())
+        return false;
+
+    juce::PluginDescription description;
+    description.name = name;
+    description.pluginFormatName = "Internal";
+    description.fileOrIdentifier = name;
+    return insertProcessor (std::move (processor), name, description);
+}
+
+bool PluginChain::insertProcessor (std::unique_ptr<juce::AudioProcessor> processor,
+                                   const juce::String& name, const juce::PluginDescription& description)
 {
     JUCE_ASSERT_MESSAGE_THREAD
     jassert (processor != nullptr);
@@ -103,7 +134,7 @@ bool PluginChain::addProcessor (std::unique_ptr<juce::AudioProcessor> processor,
     }
 
     slot.release();   // the ChainProcessor owns it now
-    entries.push_back ({ nextId++, name, false, rawProcessor });
+    entries.push_back ({ nextId++, name, false, rawProcessor, description });
     changed();
     return true;
 }
@@ -112,34 +143,45 @@ void PluginChain::addPlugin (const juce::PluginDescription& description)
 {
     JUCE_ASSERT_MESSAGE_THREAD
 
-    // The callback runs on the message thread, possibly after this object is
-    // gone; the weak reference catches that and the new instance is simply
-    // deleted. A pending creation has no id yet, so remove() cannot target it.
-    const auto spec = processingSpec();
-    formatManager.createPluginInstanceAsync (
-        description, spec.sampleRate, spec.maxBlockSize,
-        [weak = juce::WeakReference<PluginChain> (this), name = description.name]
-        (std::unique_ptr<juce::AudioPluginInstance> instance, const juce::String& message)
+    if (isRestoring())
+        return;
+
+    createProcessor (description,
+        [weak = juce::WeakReference<PluginChain> (this), description, epoch = generation]
+        (std::unique_ptr<juce::AudioProcessor> instance, const juce::String& message)
         {
             auto* self = weak.get();
-
-            if (self == nullptr)
+            if (self == nullptr || self->generation != epoch || self->isRestoring())
                 return;
 
             if (instance == nullptr)
             {
-                self->error (utf8 ("플러그인을 불러오지 못했습니다: ") + name
+                self->error (utf8 ("플러그인을 불러오지 못했습니다: ") + description.name
                              + (message.isNotEmpty() ? " (" + message + ")" : juce::String()));
                 return;
             }
-
-            self->addProcessor (std::move (instance), name);
+            self->insertProcessor (std::move (instance), description.name, description);
         });
+}
+
+void PluginChain::createProcessor (const juce::PluginDescription& description, CreateCallback callback)
+{
+    const auto spec = processingSpec();
+    if (processorFactory)
+        processorFactory (description, spec.sampleRate, spec.maxBlockSize, std::move (callback));
+    else
+        formatManager.createPluginInstanceAsync (description, spec.sampleRate, spec.maxBlockSize,
+            [callback = std::move (callback)] (std::unique_ptr<juce::AudioPluginInstance> instance,
+                                               const juce::String& message)
+            { callback (std::move (instance), message); });
 }
 
 bool PluginChain::remove (int id)
 {
     JUCE_ASSERT_MESSAGE_THREAD
+    if (isRestoring())
+        return false;
+
     const int index = indexOf (id);
 
     if (index < 0)
@@ -164,6 +206,9 @@ bool PluginChain::remove (int id)
 bool PluginChain::move (int id, int newIndex)
 {
     JUCE_ASSERT_MESSAGE_THREAD
+    if (isRestoring())
+        return false;
+
     const int index = indexOf (id);
 
     if (index < 0)
@@ -194,6 +239,9 @@ bool PluginChain::move (int id, int newIndex)
 bool PluginChain::setBypassed (int id, bool bypassed)
 {
     JUCE_ASSERT_MESSAGE_THREAD
+    if (isRestoring())
+        return false;
+
     const int index = indexOf (id);
 
     if (index < 0)
@@ -217,6 +265,176 @@ bool PluginChain::setBypassed (int id, bool bypassed)
 const std::vector<ChainEntry>& PluginChain::getEntries() const
 {
     return entries;
+}
+
+bool PluginChain::isRestoring() const
+{
+    return restore != nullptr;
+}
+
+std::unique_ptr<juce::XmlElement> PluginChain::createStateXml() const
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+    auto xml = std::make_unique<juce::XmlElement> ("DAWChain");
+    xml->setAttribute ("version", 1);
+    for (const auto& entry : entries)
+    {
+        auto* item = xml->createNewChildElement ("Plugin");
+        item->setAttribute ("bypassed", entry.bypassed ? 1 : 0);
+        item->addChildElement (entry.description.createXml().release());
+        juce::MemoryBlock state;
+        entry.processor->getStateInformation (state);
+        item->createNewChildElement ("State")->addTextElement (
+            juce::Base64::toBase64 (state.getData(), state.getSize()));
+    }
+    return xml;
+}
+
+void PluginChain::restoreFromXml (const juce::XmlElement& xml, std::function<void (RestoreResult)> onDone)
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+    const auto reject = [&]
+    {
+        juce::MessageManager::callAsync (
+            [weak = juce::WeakReference<PluginChain> (this), done = std::move (onDone)]
+            {
+                if (auto* self = weak.get())
+                {
+                    self->error (utf8 ("체인 상태를 불러올 수 없습니다. 파일 형식이나 복원 상태를 확인하세요."));
+                    if (weak != nullptr && done)
+                        done ({});
+                }
+            });
+    };
+    if (isRestoring() || ! xml.hasTagName ("DAWChain") || xml.getStringAttribute ("version") != "1")
+    {
+        reject();
+        return;
+    }
+
+    auto job = std::make_unique<RestoreState>();
+    // Validate the entire document before touching the current model, even
+    // the entries beyond the limit. Keep the input independent of its caller.
+    for (auto* element : xml.getChildIterator())
+    {
+        RestoreState::Item item;
+        const auto* description = element->getChildByName ("PLUGIN");
+        const auto* state = element->getChildByName ("State");
+        const auto bypassed = element->getStringAttribute ("bypassed");
+        juce::MemoryOutputStream decoded;
+        if (! element->hasTagName ("Plugin") || element->getNumChildElements() != 2
+            || description == nullptr || ! item.description.loadFromXml (*description)
+            || item.description.name.isEmpty() || item.description.pluginFormatName.isEmpty()
+            || item.description.fileOrIdentifier.isEmpty()
+            || state == nullptr || (bypassed != "0" && bypassed != "1")
+            || ! juce::Base64::convertFromBase64 (decoded, state->getAllSubText())
+            || juce::Base64::toBase64 (decoded.getData(), decoded.getDataSize()) != state->getAllSubText())
+        {
+            reject();
+            return;
+        }
+        item.state = decoded.getMemoryBlock();
+        item.bypassed = bypassed == "1";
+        if (job->items.size() < (size_t) ChainProcessor::kMaxSlots)
+            job->items.push_back (std::move (item));
+        else
+            job->overflowNames.add (item.description.name);
+    }
+    job->onDone = std::move (onDone);
+    ++generation; // A normal Add started before this restore must not reappear.
+    restore = std::move (job);
+    scheduleRestore();
+}
+
+void PluginChain::scheduleRestore()
+{
+    juce::MessageManager::callAsync ([weak = juce::WeakReference<PluginChain> (this)]
+    {
+        if (auto* self = weak.get())
+            self->advanceRestore();
+    });
+}
+
+void PluginChain::advanceRestore()
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+    if (! restore || restore->creating)
+        return;
+
+    if (restore->clearing)
+    {
+        if (! entries.empty())
+        {
+            // Queue pressure is temporary: the timer retries, and the model
+            // only drops the processor after Remove has been accepted.
+            if (! chain.post ({ ChainCommandType::Remove, entries.front().id }))
+                return;
+            entries.erase (entries.begin());
+            scheduleRestore();
+            changed(); // Close editors before retirement can delete anything.
+            return;
+        }
+        restore->clearing = false;
+    }
+
+    if (restore->pending)
+    {
+        auto& slot = restore->pending;
+        const auto& item = restore->items[restore->next];
+        if (! chain.post ({ ChainCommandType::Insert, slot->id, (int) entries.size(), item.bypassed, slot.get() }))
+            return;
+        entries.push_back ({ slot->id, item.description.name, item.bypassed,
+                             slot->processor.get(), item.description });
+        slot.release();
+        ++nextId;
+        ++restore->next;
+        ++restore->result.restored;
+        scheduleRestore();
+        changed();
+        return;
+    }
+
+    if (restore->next == restore->items.size())
+    {
+        auto finished = std::move (restore);
+        finished->result.failedNames.addArray (finished->overflowNames);
+        if (finished->onDone)
+            finished->onDone (std::move (finished->result));
+        return;
+    }
+
+    // Create serially so completion order cannot reorder the XML. A factory
+    // may complete inline; defer the next step to avoid recursive creation.
+    restore->creating = true;
+    const auto description = restore->items[restore->next].description;
+    createProcessor (description,
+        [weak = juce::WeakReference<PluginChain> (this), epoch = generation]
+        (std::unique_ptr<juce::AudioProcessor> processor, const juce::String&)
+        {
+            auto* self = weak.get();
+            if (self == nullptr || self->generation != epoch || ! self->restore)
+                return;
+            auto& job = *self->restore;
+            const auto& item = job.items[job.next];
+            if (processor != nullptr && setStereoLayout (*processor))
+            {
+                processor->setStateInformation (item.state.getData(), (int) item.state.getSize());
+                auto slot = std::make_unique<ChainSlot>();
+                slot->id = self->nextId;
+                slot->bypassed = item.bypassed;
+                slot->processor = std::move (processor);
+                const auto spec = self->processingSpec();
+                slot->prepare (spec.sampleRate, spec.maxBlockSize);
+                job.pending = std::move (slot);
+            }
+            else
+            {
+                job.result.failedNames.add (item.description.name);
+                ++job.next;
+            }
+            job.creating = false;
+            self->scheduleRestore();
+        });
 }
 
 void PluginChain::pumpRetired()
@@ -254,7 +472,10 @@ void PluginChain::pumpRetired()
 
 void PluginChain::timerCallback()
 {
+    const auto weak = juce::WeakReference<PluginChain> (this);
     pumpRetired();
+    if (auto* self = weak.get())
+        self->advanceRestore();
 }
 
 int PluginChain::indexOf (int id) const

@@ -1,7 +1,7 @@
 # 화면 ↔ 백엔드 인터페이스: 출력 음소거, 체인 저장/불러오기
 
 작성일: 2026-11-20
-상태: 백엔드(Codex) 구현 대기. 화면 쪽은 이 문서의 시그니처대로 연결한다.
+상태: 백엔드 API 구현 완료. 화면 쪽은 이 문서의 시그니처대로 연결한다.
 
 ## 역할 분담 (사용자 결정, 2026-11-20)
 
@@ -47,9 +47,12 @@ void restoreFromXml (const juce::XmlElement& state, std::function<void (RestoreR
 bool isRestoring() const;   // 복원 중이면 true (화면은 이때 추가/삭제/이동 버튼을 막는다)
 ```
 
-XML 형식 (백엔드가 정하되 아래 내용을 담는다):
+XML 형식:
 - 루트 태그 `DAWChain`, 속성 `version="1"`.
-- 플러그인마다 하나의 자식: `PluginDescription::createXml()` 결과, `bypassed`, 플러그인 상태(`getStateInformation` → base64).
+- 플러그인마다 `<Plugin bypassed="0|1">` 자식 하나. 그 안에 `PluginDescription::createXml()`의 `<PLUGIN .../>`와 `<State>표준 base64</State>`를 저장한다. 빈 상태는 `<State/>`로 저장한다.
+- `addPlugin`은 원래 설명을 보존한다. `addProcessor`로 직접 넣은 프로세서는 `Internal` 형식과 이름을 식별자로 기록한다. 이를 복원하려면 생성자의 선택적 `ProcessorFactory`를 제공한다. 팩토리 완료 콜백은 메시지 스레드에서 한 번 호출해야 하며 동기 완료도 허용한다.
+- 복원은 한 번에 하나씩 생성해 XML 순서를 보장한다. 명령 큐가 가득 차면 타이머로 재시도한다. 기존 비동기 추가가 복원 이후 뒤늦게 완료되면 폐기한다.
+- 복원 중 `setBypassed`와 중첩 복원도 거절한다. 중첩 복원 요청은 기존 복원을 유지하고 자체 `onDone({0, {}})` 및 `onError`를 비동기로 호출한다.
 - 형식을 모르는 버전이거나 망가진 XML이면 체인을 건드리지 않고 `onDone({0, {}})` + `onError(한국어)`.
 
 요구 사항:

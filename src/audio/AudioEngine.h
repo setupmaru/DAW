@@ -12,9 +12,9 @@
 // with one output channel only L is written).
 //
 // Threads: initialise/shutdown/prepareForTest/setInputChannel/getChain().post
-// run on the message thread. Lifecycle callbacks may also come from a driver
-// thread; JUCE excludes IO during them, and ChainProcessor serialises them
-// with message-thread edits. The IO callback never allocates, frees, locks or logs.
+// run on the message thread, including aboutToStart/prepare. Only stop/error
+// callbacks may come from a driver thread, with IO excluded by JUCE.
+// The IO callback never allocates, frees, locks or logs.
 class AudioEngine : public juce::AudioIODeviceCallback
 {
 public:
@@ -36,6 +36,8 @@ public:
     void prepareForTest (double sampleRate, int blockSize);
 
     void setInputChannel (int index) { inputChannel.store (index); }
+    void setOutputMuted (bool muted) { outputMuted.store (muted); }
+    bool isOutputMuted() const { return outputMuted.load(); }
 
     LevelMeterSource& getInputMeter() { return inputMeter; }
     LevelMeterSource& getOutputMeter() { return outputMeter; }
@@ -45,13 +47,16 @@ public:
                                            int numSamples, const juce::AudioIODeviceCallbackContext& context) override;
     void audioDeviceAboutToStart (juce::AudioIODevice* device) override;
     void audioDeviceStopped() override;
+    void audioDeviceError (const juce::String&) override;
 
 private:
     juce::AudioDeviceManager deviceManager;
     ChainProcessor chain;
     juce::AudioBuffer<float> workBuffer;   // 2 channels x prepared block size
-    int preparedBlockSize = 0;
+    std::atomic<int> preparedBlockSize { 0 };
     std::atomic<int> inputChannel { 0 };
+    std::atomic<bool> outputMuted { false };
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> muteGain { 1.0f };
     LevelMeterSource inputMeter, outputMeter;
 
     JUCE_DECLARE_NON_COPYABLE (AudioEngine)

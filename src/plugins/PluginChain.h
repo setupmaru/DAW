@@ -18,6 +18,7 @@ struct ChainEntry
     juce::String name;
     bool bypassed;
     juce::AudioProcessor* processor;
+    juce::PluginDescription description;
 };
 
 // The message-thread model of the effect chain. Every edit is posted to the
@@ -35,7 +36,11 @@ struct ChainEntry
 class PluginChain : private juce::Timer
 {
 public:
-    PluginChain (ChainProcessor&, juce::AudioPluginFormatManager&);
+    using CreateCallback = std::function<void (std::unique_ptr<juce::AudioProcessor>, const juce::String&)>;
+    // Optional factory for non-hosted processors/tests. Completion must run on
+    // the message thread exactly once; synchronous completion is also allowed.
+    using ProcessorFactory = std::function<void (const juce::PluginDescription&, double, int, CreateCallback)>;
+    PluginChain (ChainProcessor&, juce::AudioPluginFormatManager&, ProcessorFactory = {});
     ~PluginChain() override;
 
     // Fallback spec before the engine has ever been prepared. Afterwards new
@@ -61,6 +66,15 @@ public:
 
     const std::vector<ChainEntry>& getEntries() const;
 
+    struct RestoreResult
+    {
+        int restored = 0;
+        juce::StringArray failedNames;
+    };
+    std::unique_ptr<juce::XmlElement> createStateXml() const;
+    void restoreFromXml (const juce::XmlElement&, std::function<void (RestoreResult)> onDone);
+    bool isRestoring() const;
+
     std::function<void()> onChanged;                       // the entries changed
     std::function<void (const juce::String&)> onError;    // Korean, user-facing
 
@@ -74,6 +88,15 @@ private:
     void changed();
     void error (const juce::String& message);
     ChainProcessor::ProcessingSpec processingSpec() const;
+    bool insertProcessor (std::unique_ptr<juce::AudioProcessor>, const juce::String&,
+                          const juce::PluginDescription&);
+    void createProcessor (const juce::PluginDescription&, CreateCallback);
+    void advanceRestore();
+    void scheduleRestore();
+    struct RestoreState;
+    std::unique_ptr<RestoreState> restore;
+    ProcessorFactory processorFactory;
+    unsigned int generation = 0;
 
     ChainProcessor& chain;
     juce::AudioPluginFormatManager& formatManager;

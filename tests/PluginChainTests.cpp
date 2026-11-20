@@ -53,12 +53,78 @@ public:
             restarted = true;
             chain.prepare (44100.0, 128);
         }
+        else
+        {
+            const auto spec = chain.getProcessingSpec();
+            readSpecDuringCorrection = juce::exactlyEqual (spec.sampleRate, 44100.0) && spec.maxBlockSize == 128;
+        }
     }
+    bool readSpecDuringCorrection = false;
 
 private:
     ChainProcessor& chain;
     bool restarted = false;
 };
+
+// Affine state makes both restoration order and binary state audible.
+class StatefulProcessor : public TestProcessorBase
+{
+public:
+    StatefulProcessor (float gainIn = 1.0f, float offsetIn = 0.0f) : gain (gainIn), offset (offsetIn) {}
+    using TestProcessorBase::processBlock;
+    void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+    {
+        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        {
+            buffer.applyGain (ch, 0, buffer.getNumSamples(), gain);
+            juce::FloatVectorOperations::add (buffer.getWritePointer (ch), offset, buffer.getNumSamples());
+        }
+    }
+    void getStateInformation (juce::MemoryBlock& state) override
+    {
+        juce::MemoryOutputStream output (state, false);
+        output.writeFloat (gain);
+        output.writeFloat (offset);
+    }
+    void setStateInformation (const void* data, int size) override
+    {
+        juce::MemoryInputStream input (data, (size_t) size, false);
+        gain = input.readFloat();
+        offset = input.readFloat();
+        stateApplied = true;
+    }
+    void prepareToPlay (double, int) override { preparedWithState = stateApplied; }
+    bool stateApplied = false, preparedWithState = false;
+    float gain, offset;
+};
+
+std::unique_ptr<juce::XmlElement> makeState (const juce::StringArray& names)
+{
+    auto xml = std::make_unique<juce::XmlElement> ("DAWChain");
+    xml->setAttribute ("version", 1);
+    for (const auto& name : names)
+    {
+        auto* item = xml->createNewChildElement ("Plugin");
+        item->setAttribute ("bypassed", 0);
+        juce::PluginDescription description;
+        description.name = name;
+        description.pluginFormatName = "Test";
+        description.fileOrIdentifier = "/test/" + name;
+        item->addChildElement (description.createXml().release());
+        StatefulProcessor processor (name == "Gain" ? 0.5f : 1.0f, name == "Offset" ? 0.25f : 0.0f);
+        juce::MemoryBlock state;
+        processor.getStateInformation (state);
+        item->createNewChildElement ("State")->addTextElement (
+            juce::Base64::toBase64 (state.getData(), state.getSize()));
+    }
+    return xml;
+}
+
+PluginChain::ProcessorFactory statefulFactory()
+{
+    return [] (const juce::PluginDescription&, double, int, PluginChain::CreateCallback done)
+    { done (std::make_unique<StatefulProcessor>(), {}); };
+}
 
 // Runs one block of constant `input` (both channels) and returns the left
 // channel's last output sample.
@@ -128,6 +194,11 @@ struct PluginChainTests : public juce::UnitTest
 
     void runTest() override
     {
+        testStateRoundTrip();
+        testInvalidStateLeavesChainUntouched();
+        testRestoreFailuresAndEditGuard();
+        testRestoreLimitAndQueuePressure();
+        testRestoreDestructionAndPendingAdd();
         testAddRemoveMoveUpdatesModel();
         testMoveChangesAudioOrder();
         testAddPluginFailureReportsError();
@@ -143,6 +214,219 @@ struct PluginChainTests : public juce::UnitTest
         testStoppedRemovalsPreserveLifetime();
         testNewSlotUsesEngineSpec();
         testRestartDuringSlotPreparation();
+    }
+
+    void testStateRoundTrip()
+    {
+        beginTest ("state XML round trip restores ordered binary state, bypass and descriptions without a device");
+        AudioEngine engine;
+        juce::AudioPluginFormatManager formats;
+        PluginChain model (engine.getChain(), formats, statefulFactory());
+        expect (model.addProcessor (std::make_unique<StatefulProcessor> (1.0f, 0.25f), "Offset"));
+        expect (model.addProcessor (std::make_unique<StatefulProcessor> (0.5f, 0.0f), "Gain"));
+        expect (model.addProcessor (std::make_unique<StatefulProcessor> (7.0f, 9.0f), "Bypassed"));
+        expect (model.move (model.getEntries()[1].id, 0));
+        expect (model.setBypassed (model.getEntries()[2].id, true));
+        auto xml = model.createStateXml();
+        const auto expectedXml = xml->toString();
+        xml = juce::XmlDocument::parse (expectedXml); // Exercise the persisted XML, including empty State elements.
+        expect (xml != nullptr);
+        const auto expectedNames = namesOf (model);
+        int changes = 0, doneCalls = 0;
+        model.onChanged = [&] { ++changes; };
+        PluginChain::RestoreResult result;
+        model.restoreFromXml (*xml, [&] (PluginChain::RestoreResult r)
+        {
+            expect (juce::MessageManager::getInstance()->isThisTheMessageThread());
+            expect (! model.isRestoring());
+            result = std::move (r);
+            ++doneCalls;
+        });
+        xml.reset(); // Restore owns its own parsed data.
+        expect (model.isRestoring());
+        expect (pumpMessagesUntil ([&] { return doneCalls != 0; }));
+        expectEquals (doneCalls, 1);
+        expectEquals (changes, 6);
+        expectEquals (result.restored, 3);
+        expect (result.failedNames.isEmpty());
+        expect (namesOf (model) == expectedNames);
+        expect (model.getEntries()[2].bypassed);
+        for (const auto& entry : model.getEntries())
+        {
+            auto* processor = dynamic_cast<StatefulProcessor*> (entry.processor);
+            expect (processor != nullptr && processor->preparedWithState, "setStateInformation precedes prepare and Insert");
+        }
+        const auto savedAgain = model.createStateXml();
+        expectEquals (savedAgain->toString(), expectedXml, "all descriptions and binary states round trip exactly");
+        expectEquals (savedAgain->getChildElement (0)->getChildByName ("PLUGIN")->getStringAttribute ("format"),
+                      juce::String ("Internal"));
+        engine.prepareForTest (kSampleRate, kBlock);
+        expectWithinAbsoluteError (runConstant (engine.getChain(), 1.0f), 0.75f, 1.0e-5f);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+        expectEquals (doneCalls, 1);
+    }
+
+    void testInvalidStateLeavesChainUntouched()
+    {
+        beginTest ("invalid XML and unknown versions preserve the existing chain and report exactly once");
+        Fixture f;
+        expect (f.model->addProcessor (std::make_unique<GainProcessor> (0.5f), "Keep"));
+        for (int problem = 0; problem < 6; ++problem)
+        {
+            auto xml = makeState ({ "Gain" });
+            if (problem == 0) xml->setAttribute ("version", 2);
+            if (problem == 1) xml->setTagName ("WrongRoot");
+            if (problem == 2) xml->getChildElement (0)->getChildByName ("State")->getFirstChildElement()->setText ("not base64!");
+            if (problem == 3) xml->getChildElement (0)->removeChildElement (xml->getChildElement (0)->getChildByName ("PLUGIN"), true);
+            if (problem == 4) xml->getChildElement (0)->setAttribute ("bypassed", "invalid");
+            if (problem == 5) xml->getChildElement (0)->createNewChildElement ("Unexpected");
+            int done = 0;
+            f.model->restoreFromXml (*xml, [&] (PluginChain::RestoreResult r)
+            {
+                expectEquals (r.restored, 0);
+                expect (r.failedNames.isEmpty());
+                ++done;
+            });
+            expect (pumpMessagesUntil ([&] { return done != 0; }));
+            expectEquals (done, 1);
+            expect (namesOf (*f.model) == std::vector<juce::String> { "Keep" });
+            expectEquals (f.changes, 1);
+            expectEquals (f.errors.size(), problem + 1);
+        }
+    }
+
+    void testRestoreFailuresAndEditGuard()
+    {
+        beginTest ("serial async creation preserves XML order across failures and refuses edits while restoring");
+        AudioEngine engine;
+        juce::AudioPluginFormatManager formats;
+        std::vector<PluginChain::CreateCallback> callbacks;
+        juce::StringArray requested;
+        PluginChain model (engine.getChain(), formats,
+            [&] (const juce::PluginDescription& d, double, int, PluginChain::CreateCallback cb)
+            { requested.add (d.name); callbacks.push_back (std::move (cb)); });
+        int errors = 0;
+        model.onError = [&] (const juce::String&) { ++errors; };
+        expect (model.addProcessor (std::make_unique<InvertProcessor>(), "Old"));
+        const int old = model.getEntries()[0].id;
+        auto xml = makeState ({ "Gain", "Missing", "Mono", "Offset" });
+        int done = 0;
+        PluginChain::RestoreResult result;
+        model.restoreFromXml (*xml, [&] (PluginChain::RestoreResult r) { result = std::move (r); ++done; });
+        expect (! model.addProcessor (std::make_unique<InvertProcessor>(), "Blocked"));
+        model.addPlugin (unknownPlugin());
+        expect (! model.remove (old));
+        expect (! model.move (old, 0));
+        expect (! model.setBypassed (old, true));
+        expectEquals (errors, 0);
+        for (int i = 0; i < 4; ++i)
+        {
+            expect (pumpMessagesUntil ([&] { return (int) callbacks.size() > i; }));
+            expectEquals ((int) callbacks.size(), i + 1, "only one request is in flight");
+            auto cb = std::move (callbacks[(size_t) i]);
+            if (requested[i] == "Missing") cb (nullptr, "missing");
+            else if (requested[i] == "Mono") cb (std::make_unique<MonoOnlyProcessor>(), {});
+            else cb (std::make_unique<StatefulProcessor>(), {});
+        }
+        expect (pumpMessagesUntil ([&] { return done != 0; }));
+        expectEquals (done, 1);
+        expectEquals (result.restored, 2);
+        expect (result.failedNames == juce::StringArray { "Missing", "Mono" });
+        expect (namesOf (model) == std::vector<juce::String> { "Gain", "Offset" });
+        expectEquals (errors, 0);
+        engine.prepareForTest (kSampleRate, kBlock);
+        expectWithinAbsoluteError (runConstant (engine.getChain(), 1.0f), 0.75f, 1.0e-5f);
+    }
+
+    void testRestoreLimitAndQueuePressure()
+    {
+        beginTest ("restore retries a full command queue and limits XML to its first 16 entries");
+        ChainProcessor chain;
+        chain.prepare (kSampleRate, kBlock);
+        juce::AudioPluginFormatManager formats;
+        PluginChain model (chain, formats, statefulFactory());
+        expect (model.addProcessor (std::make_unique<GainProcessor> (0.5f), "Old"));
+        runBlocks (chain, kSettleBlocks);
+        for (int i = 0; i < ChainProcessor::kCommandQueueCapacity; ++i)
+            expect (model.setBypassed (model.getEntries()[0].id, i % 2 == 0));
+        juce::StringArray names;
+        for (int i = 1; i <= 18; ++i) names.add ("Effect" + juce::String (i));
+        auto xml = makeState (names);
+        int done = 0, errors = 0;
+        model.onError = [&] (const juce::String&) { ++errors; };
+        PluginChain::RestoreResult result;
+        model.restoreFromXml (*xml, [&] (PluginChain::RestoreResult r) { result = std::move (r); ++done; });
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+        expect (model.isRestoring());
+        expect (namesOf (model) == std::vector<juce::String> { "Old" }, "failed Remove leaves model unchanged");
+        expect (pumpMessagesUntil ([&] { runBlocks (chain, 1); return done != 0; }));
+        runBlocks (chain, kSettleBlocks);
+        model.pumpRetired();
+        expectEquals (done, 1);
+        expectEquals (errors, 0);
+        expectEquals (result.restored, 16);
+        expect (result.failedNames == juce::StringArray { "Effect17", "Effect18" });
+        expectEquals (chain.getNumActiveSlots(), 16);
+        expectEquals ((int) model.getEntries().size(), 16);
+        for (int i = 0; i < 16; ++i)
+            expectEquals (model.getEntries()[(size_t) i].name, names[i]);
+
+        beginTest ("empty state clears the chain using normal retirement");
+        CountingProcessor::destroyed() = 0;
+        chain.setProcessingActive (false);
+        model.remove (model.getEntries()[0].id);
+        expect (model.addProcessor (std::make_unique<CountingProcessor>(), "Counted"));
+        bool alive = false;
+        model.onChanged = [&] { alive = CountingProcessor::destroyed() == 0; };
+        auto empty = makeState ({});
+        model.restoreFromXml (*empty, [&] (PluginChain::RestoreResult r) { expectEquals (r.restored, 0); ++done; });
+        expect (pumpMessagesUntil ([&] { return done == 2; }));
+        expect (alive, "onChanged precedes deletion");
+        model.pumpRetired();
+        expectEquals (CountingProcessor::destroyed(), 1);
+        expect (model.getEntries().empty());
+    }
+
+    void testRestoreDestructionAndPendingAdd()
+    {
+        beginTest ("restore destruction suppresses completion and deletes a late created processor");
+        AudioEngine engine;
+        juce::AudioPluginFormatManager formats;
+        PluginChain::CreateCallback pending;
+        auto model = std::make_unique<PluginChain> (engine.getChain(), formats,
+            [&] (const juce::PluginDescription&, double, int, PluginChain::CreateCallback cb) { pending = std::move (cb); });
+        auto xml = makeState ({ "Gain" });
+        int done = 0;
+        model->restoreFromXml (*xml, [&] (PluginChain::RestoreResult) { ++done; });
+        expect (pumpMessagesUntil ([&] { return (bool) pending; }));
+        model.reset();
+        CountingProcessor::destroyed() = 0;
+        pending (std::make_unique<CountingProcessor>(), {});
+        expectEquals (CountingProcessor::destroyed(), 1);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+        expectEquals (done, 0);
+        expectEquals (engine.getChain().getNumActiveSlots(), 0);
+
+        beginTest ("a normal Add pending before restore cannot reappear after restore finishes");
+        model = std::make_unique<PluginChain> (engine.getChain(), formats,
+            [&] (const juce::PluginDescription&, double, int, PluginChain::CreateCallback cb) { pending = std::move (cb); });
+        model->addPlugin (unknownPlugin());
+        auto lateAdd = std::move (pending);
+        auto empty = makeState ({});
+        model->restoreFromXml (*empty, [&] (PluginChain::RestoreResult) { ++done; });
+        expect (pumpMessagesUntil ([&] { return done == 1; }));
+        lateAdd (std::make_unique<CountingProcessor>(), {});
+        expect (model->getEntries().empty());
+        expectEquals (CountingProcessor::destroyed(), 2);
+
+        beginTest ("destroying a restore also deletes its prepared unposted slot");
+        model->restoreFromXml (*xml, [&] (PluginChain::RestoreResult) { ++done; });
+        expect (pumpMessagesUntil ([&] { return (bool) pending; }));
+        pending (std::make_unique<CountingProcessor>(), {});
+        model.reset(); // Before the scheduled Insert.
+        expectEquals (CountingProcessor::destroyed(), 3);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+        expectEquals (done, 1);
     }
 
     //==========================================================================
@@ -231,6 +515,7 @@ struct PluginChainTests : public juce::UnitTest
         expect (f.model->addProcessor (std::move (processor), "Restart"));
         expectEquals (raw->getSampleRate(), 44100.0);
         expectEquals (raw->getBlockSize(), 128);
+        expect (raw->readSpecDuringCorrection, "post re-prepare allows synchronous spec queries without holding the mutex");
         runBlocks (f.chain, kSettleBlocks);
         expectWithinAbsoluteError (runConstant (f.chain, 1.0f), 0.5f, 1.0e-5f);
     }

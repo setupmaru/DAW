@@ -60,6 +60,7 @@ ChainProcessor::~ChainProcessor()
 
 void ChainProcessor::prepare (double sampleRate, int maxBlockSize)
 {
+    JUCE_ASSERT_MESSAGE_THREAD
     jassert (sampleRate > 0.0 && maxBlockSize > 0);
     const std::lock_guard<std::mutex> lock (controlMutex);
 
@@ -107,15 +108,25 @@ void ChainProcessor::prepare (double sampleRate, int maxBlockSize)
 
 bool ChainProcessor::post (const ChainCommand& cmd)
 {
-    const std::lock_guard<std::mutex> lock (controlMutex);
+    JUCE_ASSERT_MESSAGE_THREAD
+    std::unique_lock<std::mutex> lock (controlMutex);
 
     // The device may have restarted while the message thread was creating the
     // slot. Correct its spec before ownership passes to the audio thread.
-    if (cmd.type == ChainCommandType::Insert && cmd.slot != nullptr
+    while (cmd.type == ChainCommandType::Insert && cmd.slot != nullptr
         && preparedSampleRate > 0.0
         && (! juce::exactlyEqual (cmd.slot->preparedSampleRate, preparedSampleRate)
             || cmd.slot->preparedBlockSize != preparedBlockSize))
-        cmd.slot->prepare (preparedSampleRate, preparedBlockSize);
+    {
+        const auto rate = preparedSampleRate;
+        const auto size = preparedBlockSize;
+        // Plugin preparation may synchronously notify listeners. Do not hold
+        // the control mutex here; prepare itself is message-thread only, so
+        // only stop can interleave and it does not change the spec.
+        lock.unlock();
+        cmd.slot->prepare (rate, size);
+        lock.lock();
+    }
 
     if (! commands.push (cmd))
         return false;
