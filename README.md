@@ -7,6 +7,19 @@
 > **주의: 반드시 헤드폰을 쓰세요.** 앱을 켜면 마이크 소리가 바로 출력 장치로 나갑니다.
 > 노트북 스피커처럼 마이크 가까이 있는 스피커로 들으면 하울링(삐- 소리)이 날 수 있습니다.
 
+## 내려받기 (Windows)
+
+[Releases](https://github.com/setupmaru/DAW/releases)에서 `DAW-…-windows-x64.zip`을 받아 압축을 풀고 `DAW.exe`를 실행하세요. 설치는 필요 없습니다.
+
+## 릴리스 만들기
+
+`v0.1.0`처럼 `v`로 시작하는 태그를 푸시하면 `.github/workflows/release.yml`이 Windows에서 빌드·테스트한 뒤 zip을 릴리스에 올립니다.
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 ## Windows 준비물
 
 - Visual Studio 2022 ("C++를 사용한 데스크톱 개발" 워크로드 포함)

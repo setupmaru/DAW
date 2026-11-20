@@ -1,0 +1,69 @@
+name: release
+
+# Builds the Windows app and publishes it as a GitHub release.
+# Trigger: push a tag such as v0.1.0 (or run it by hand for an existing tag).
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write   # create the release and upload the zip
+
+env:
+  JUCE_TAG: 8.0.17-security
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Cache JUCE (FetchContent)
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: juce-${{ env.JUCE_TAG }}-${{ runner.os }}-release
+
+      # Static C++ runtime: DAW.exe runs without the Visual C++ Redistributable.
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $exe = "build/DAW_artefacts/Release/DAW.exe"
+          if (-not (Test-Path $exe)) { throw "DAW.exe not found at $exe" }
+          New-Item -ItemType Directory -Force dist/DAW | Out-Null
+          Copy-Item $exe dist/DAW/
+          Copy-Item README.md dist/DAW/
+          Compress-Archive -Path dist/DAW/* -DestinationPath "dist/DAW-$env:TAG-windows-x64.zip" -Force
+          Get-FileHash "dist/DAW-$env:TAG-windows-x64.zip" -Algorithm SHA256 | Format-List
+
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zip = "dist/DAW-$env:TAG-windows-x64.zip"
+          gh release view $env:TAG --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG $zip --clobber --repo $env:GITHUB_REPOSITORY
+          } else {
+            gh release create $env:TAG $zip --repo $env:GITHUB_REPOSITORY --title "DAW $env:TAG" --notes-file docs/release-notes.md
+          }
