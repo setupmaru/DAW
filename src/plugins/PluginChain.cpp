@@ -293,10 +293,13 @@ std::unique_ptr<juce::XmlElement> PluginChain::createStateXml() const
 void PluginChain::restoreFromXml (const juce::XmlElement& xml, std::function<void (RestoreResult)> onDone)
 {
     JUCE_ASSERT_MESSAGE_THREAD
+    // Taken out here: MSVC resolves `this` in an init-capture of a lambda nested
+    // in a [&] lambda to the outer lambda, not to the PluginChain.
+    const juce::WeakReference<PluginChain> weakThis (this);
     const auto reject = [&]
     {
         juce::MessageManager::callAsync (
-            [weak = juce::WeakReference<PluginChain> (this), done = std::move (onDone)]
+            [weak = weakThis, done = std::move (onDone)]
             {
                 if (auto* self = weak.get())
                 {
