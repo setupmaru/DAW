@@ -152,7 +152,11 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* inputCha
             // Mono: crossfade each side towards the mid signal.
             const float mono = monoMix.getNextValue();
 
-            if (mono > 0.0f)
+            if (mono >= 1.0f)
+            {
+                work[0][i] = work[1][i] = 0.5f * (work[0][i] + work[1][i]);
+            }
+            else if (mono > 0.0f)
             {
                 const float mid = 0.5f * (work[0][i] + work[1][i]);
                 work[0][i] += mono * (mid - work[0][i]);

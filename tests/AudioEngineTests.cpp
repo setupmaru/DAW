@@ -246,7 +246,18 @@ struct AudioEngineTests : public juce::UnitTest
 
             engine.setOutputMono (true);
             expect (engine.isOutputMono());
-            blocks (4);
+
+            // One 256-sample block (5.3 ms) into the 10 ms fade: L is between
+            // stereo (x) and mono (x / 2), so the switch really is a fade.
+            blocks (1);
+            {
+                const float x = in.getSample (0, kBlock - 1), l = out.getSample (0, kBlock - 1);
+                expect (std::abs (x) > 0.1f, "test signal not near zero");
+                expect (std::abs (l) < std::abs (x) - 1.0e-3f && std::abs (l) > 0.5f * std::abs (x) + 1.0e-3f,
+                        "half-way through the fade");
+            }
+
+            blocks (3);
 
             for (int ch = 0; ch < 2; ++ch)
                 expectWithinAbsoluteError (out.getSample (ch, kBlock - 1),
@@ -261,7 +272,55 @@ struct AudioEngineTests : public juce::UnitTest
             expectLessThan (maxStep (right), 0.06f);
         }
 
-        beginTest ("mono set before startup applies from the first sample; a mono source is unchanged");
+        beginTest ("mono set before startup applies from the first sample, including restart");
+        {
+            // First block: the left-only effect fades in (L != R as soon as it
+            // has any effect), so only mono from sample 0 keeps L == R exactly.
+            AudioEngine engine;
+            engine.setOutputMono (true);
+            engine.prepareForTest (48000.0, kBlock);
+            auto slot = makeSlot (1, std::make_unique<LeftOnly>(), 48000.0, kBlock);
+            expect (engine.getChain().post ({ ChainCommandType::Insert, 1, 0, false, slot.get() }));
+            slot.release();
+
+            juce::AudioBuffer<float> in (1, kBlock), out (2, kBlock);
+            for (int i = 0; i < kBlock; ++i)
+                in.setSample (0, i, 0.5f);
+
+            run (engine, in, out);
+
+            bool equal = true;
+            for (int i = 0; i < kBlock; ++i)
+                equal = equal && juce::exactlyEqual (out.getSample (0, i), out.getSample (1, i));
+            expect (equal, "L == R from the first sample");
+
+            // Switched on while the device is stopped: the restart (another
+            // rate) starts in mono at once, not with a fade from stereo.
+            AudioEngine restarted;
+            restarted.prepareForTest (48000.0, kBlock);
+            auto slot2 = makeSlot (1, std::make_unique<LeftOnly>(), 48000.0, kBlock);
+            expect (restarted.getChain().post ({ ChainCommandType::Insert, 1, 0, false, slot2.get() }));
+            slot2.release();
+
+            for (int b = 0; b < 10; ++b)
+                run (restarted, in, out);
+
+            expectEquals (out.getMagnitude (1, 0, kBlock), 0.0f, "stereo before: R silent");
+
+            restarted.audioDeviceStopped();
+            restarted.setOutputMono (true);
+            restarted.prepareForTest (44100.0, 128);
+
+            juce::AudioBuffer<float> in2 (1, 128), out2 (2, 128);
+            for (int i = 0; i < 128; ++i)
+                in2.setSample (0, i, 0.5f);
+
+            run (restarted, in2, out2);
+            expect (juce::exactlyEqual (out2.getSample (0, 0), out2.getSample (1, 0)), "mono from the first sample after restart");
+            expectWithinAbsoluteError (out2.getSample (1, 0), 0.25f, 1.0e-6f);
+        }
+
+        beginTest ("a mono source is unchanged by mono output");
         {
             AudioEngine engine;
             engine.setOutputMono (true);
@@ -276,8 +335,8 @@ struct AudioEngineTests : public juce::UnitTest
             bool same = true;
             for (int i = 0; i < kBlock; ++i)
                 same = same && juce::exactlyEqual (out.getSample (0, i), out.getSample (1, i))
-                            && std::abs (out.getSample (0, i) - in.getSample (0, i)) < 1.0e-6f;
-            expect (same, "L == R == input when the source is already mono");
+                            && juce::exactlyEqual (out.getSample (0, i), in.getSample (0, i));
+            expect (same, "L == R == input");
         }
     }
 

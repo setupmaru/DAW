@@ -367,18 +367,20 @@ void MainComponent::updateStatus()
         numbers << utf8 ("  ·  효과 지연 ") << ui::formatMs (chainMs);
 
     const auto typeName = engine.getDeviceManager().getCurrentAudioDeviceType();
-    const auto full = deviceName + (typeName.isNotEmpty() ? " (" + typeName + ")" : juce::String()) + "  ·  " + numbers;
+    // Mute and mono stay visible even when a notice covers the strip above.
+    juce::String prefix;
+
+    if (engine.isOutputMuted())
+        prefix << utf8 ("음소거 중  ·  ");
+
+    if (engine.isOutputMono())
+        prefix << utf8 ("모노  ·  ");
+
+    const auto full = prefix + deviceName + (typeName.isNotEmpty() ? " (" + typeName + ")" : juce::String()) + "  ·  " + numbers;
     const bool fits = juce::GlyphArrangement::getStringWidth (statusLabel.getFont(), full)
                       <= (float) statusLabel.getWidth() - 8.0f;
 
-    auto line = fits ? full : numbers;
-
-    if (engine.isOutputMono())
-        line = utf8 ("모노  ·  ") + line;
-
-    // Kept visible even when a notice covers the strip above.
-    if (engine.isOutputMuted())
-        line = utf8 ("음소거 중  ·  ") + line;
+    const auto line = fits ? full : prefix + numbers;
 
     statusLabel.setText (line, juce::dontSendNotification);
     statusLabel.setTooltip (utf8 ("장치: ") + deviceName + "\n"
@@ -675,7 +677,7 @@ void MainComponent::updateMonoButton()
     monoButton.setToggleState (mono, juce::dontSendNotification);   // lit while mono
     monoButton.setTooltip (mono
                                ? utf8 ("모노 켜짐: 왼쪽과 오른쪽에 같은 소리를 내보냅니다. 눌러서 스테레오로 돌아갑니다.")
-                               : utf8 ("눌러서 모노로 내보냅니다(왼쪽 = 오른쪽). 스테레오 효과 때문에 목소리가 한쪽으로 치우치거나 방송에서 소리가 이상할 때 켜세요."));
+                               : utf8 ("눌러서 모노로 내보냅니다(왼쪽 = 오른쪽). 시청자가 한쪽에서만 소리가 들린다고 하거나, 스테레오 효과 때문에 목소리가 한쪽으로 치우칠 때 켜세요."));
 }
 
 //==============================================================================
