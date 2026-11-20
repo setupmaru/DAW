@@ -6,6 +6,15 @@
 #include <memory>
 #include <vector>
 
+namespace ui
+{
+// Delays below this are too small to be worth showing to a beginner.
+constexpr double kMinShownLatencyMs = 0.05;
+
+// Formats a delay for display ("5.3ms", "12ms"). Shared with MainComponent.
+juce::String formatMs (double milliseconds);
+} // namespace ui
+
 // The effect rows ("1. 이름  [켜짐] [편집] [↑] [↓] [삭제]") followed by the
 // "+ 플러그인 추가" button, in a vertically scrolling viewport.
 //
@@ -26,6 +35,7 @@ public:
         juce::String name;
         bool bypassed;
         bool hasEditor;
+        double latencyMs;   // the plugin's own delay; 0 = none or unknown
     };
 
     ChainListComponent();

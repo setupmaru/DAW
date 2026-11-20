@@ -27,7 +27,7 @@
 // Threads: message thread only.
 class MainComponent : public juce::Component,
                       private juce::ChangeListener,
-                      private juce::Timer
+                      private juce::MultiTimer
 {
 public:
     MainComponent();
@@ -37,12 +37,17 @@ public:
     void resized() override;
 
 private:
+    enum TimerId { noticeTimer = 1, statusTimer = 2 };
+
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
-    void timerCallback() override;   // clears a timed notice
+    void timerCallback (int timerId) override;   // timed notice / status line
 
     void syncWithDevice();
-    void showNotice (const juce::String& text, bool sticky = false);
-    void clearNotice();
+    void showNoDeviceNotice();
+    void updateStatus();
+    void showNotice (const juce::String& text, bool sticky = false, int durationMs = 0);
+    void clearNotice();          // the device problem is solved: removes everything
+    void endTimedNotice();       // back to the device problem message, or nothing
 
     void chainChanged();
     void showAudioSettings();
@@ -68,7 +73,8 @@ private:
     PluginScanner scanner;
     PluginChain chain;
 
-    juce::Label noticeLabel;
+    juce::TooltipWindow tooltipWindow { nullptr, 700 };   // on the desktop: not clipped to this window
+    juce::Label noticeLabel, statusLabel;
     juce::TextButton audioSettingsButton, scanButton;
     LevelMeter inputMeter, outputMeter;
     ChainListComponent chainList;
@@ -79,7 +85,13 @@ private:
     // a reference to the device manager, so the destructor deletes it if open.
     juce::Component::SafePointer<juce::DialogWindow> settingsDialog;
 
-    bool noticeSticky = false;
+    // The device problem message, if any. It stays until the problem is solved;
+    // a timed notice may cover it for a while and it comes back afterwards.
+    juce::String stickyNoticeText;
+
+    // Device tracking for beginner-facing notices.
+    juce::String startupDeviceError;   // why the device failed to open at launch, kept until one opens
+    juce::String lastDeviceName;       // the device last seen open; empty before the first one
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };

@@ -11,6 +11,7 @@
 //
 // Lifetime: the LevelMeterSource must outlive this component.
 class LevelMeter : public juce::Component,
+                   public juce::SettableTooltipClient,
                    private juce::Timer
 {
 public:
