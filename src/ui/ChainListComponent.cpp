@@ -166,6 +166,20 @@ void ChainListComponent::setRows (std::vector<RowData> newRows)
     triggerAsyncUpdate();
 }
 
+void ChainListComponent::setEditingEnabled (bool enabled)
+{
+    if (enabled == editingEnabled)
+        return;
+
+    editingEnabled = enabled;
+    addButton.setEnabled (enabled);
+
+    // Row buttons keep their own enabled state (e.g. ↑ on the first row); the
+    // row as a whole is disabled on top of that.
+    for (auto& row : rows)
+        row->setEnabled (enabled);
+}
+
 void ChainListComponent::handleAsyncUpdate()
 {
     rows.clear();   // removes them from `content` as they are deleted
@@ -175,6 +189,7 @@ void ChainListComponent::handleAsyncUpdate()
     for (int i = 0; i < count; ++i)
     {
         rows.push_back (std::make_unique<Row> (*this, rowData[(size_t) i], i, count));
+        rows.back()->setEnabled (editingEnabled);
         content.addAndMakeVisible (*rows.back());
     }
 

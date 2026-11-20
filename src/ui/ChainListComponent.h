@@ -44,6 +44,11 @@ public:
     // Stores the snapshot and rebuilds the rows on the next message loop pass.
     void setRows (std::vector<RowData>);
 
+    // false while the chain is being replaced (preset load / restore): every
+    // row button and the add button are disabled, so nothing can be clicked
+    // that the chain would refuse anyway.
+    void setEditingEnabled (bool enabled);
+
     // For anchoring the add-plugin popup menu.
     juce::Component& getAddButton() { return addButton; }
 
@@ -62,6 +67,7 @@ private:
     void layoutContent();
 
     std::vector<RowData> rowData;
+    bool editingEnabled = true;
     juce::Viewport viewport;
     juce::Component content;   // shown in the viewport, not owned by it
     std::vector<std::unique_ptr<Row>> rows;

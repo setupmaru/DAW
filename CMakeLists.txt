@@ -35,6 +35,7 @@ set(DAW_APP_SOURCES
     src/plugins/PluginEditorWindow.cpp
     src/ui/ChainListComponent.cpp
     src/ui/LevelMeter.cpp
+    src/ui/PresetStore.cpp
 )
 # Test sources (DAWTests only).
 set(DAW_TEST_SOURCES
@@ -47,6 +48,10 @@ set(DAW_TEST_SOURCES
     # App-only, also compiled here so its queueing logic can be tested
     # without VST3 plugins (an empty format manager).
     src/plugins/PluginScanner.cpp
+    tests/PresetStoreTests.cpp
+    tests/AutosaveGateTests.cpp
+    # App-only file handling for presets; tested in a temporary folder.
+    src/ui/PresetStore.cpp
 )
 
 # --- Shared settings -------------------------------------------------------
