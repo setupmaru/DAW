@@ -4,37 +4,41 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 
-#include "audio/AudioEngine.h"
-#include "plugins/PluginChain.h"
+#include "engine/MixEngine.h"
 #include "plugins/PluginEditorWindow.h"
 #include "plugins/PluginScanner.h"
-#include "ui/AutosaveGate.h"
-#include "ui/ChainListComponent.h"
-#include "ui/LevelMeter.h"
-#include "ui/PresetStore.h"
+#include "session/Bouncer.h"
+#include "session/Session.h"
+#include "ui/AppActions.h"
+#include "ui/EditState.h"
+#include "ui/EditWindow.h"
+#include "ui/MixWindow.h"
+#include "ui/TransportBar.h"
 
 #include <map>
 #include <memory>
 
-// The single main screen (design.md 5.3):
+// The main window's content: menu bar, transport bar, the edit window or the
+// mix window, and a status line.
 //
-//   [notice strip: space always reserved, shown only with a message]
-//   [오디오 설정] [프리셋 ▼]   status line   입력 meter
-//   chain rows ... [+ 플러그인 추가]
-//   [플러그인 다시 스캔] [출력 켜짐|음소거 중] [모노]  출력 meter
+//   ┌ 파일 편집 트랙 보기 설정 ──────────────────────────────────────────┐
+//   │ [슬립|그리드] [트림|선택|잡기] ⏮ ■ ▶ ● ⟲  1|1|000   BPM  [편집|믹스] │
+//   ├───────────────┬─────────────────────────────────────────────────────┤
+//   │ track headers │ ruler / clips / waveforms / playhead                │
+//   ├───────────────┴─────────────────────────────────────────────────────┤
+//   │ session name · messages                       device · rate · CPU  │
+//   └─────────────────────────────────────────────────────────────────────┘
 //
-// Persistence (docs/frontend-backend-interface.md §3): the mute state is
-// remembered in settings.xml; the chain is saved to last-chain.xml (2 s after a
-// change, every minute, and at exit) and restored at launch; named presets
-// live in presets/.
-//
-// Owns the audio engine, the VST3 format manager, the scanner, the chain model
-// and the plugin editor windows, and connects them to the controls.
+// Owns the engine, the plugin scanner, the session and every window, and
+// implements the application commands (menus and shortcuts).
 //
 // Threads: message thread only.
 class MainComponent : public juce::Component,
+                      public juce::ApplicationCommandTarget,
+                      public juce::MenuBarModel,
+                      public AppActions,
                       private juce::ChangeListener,
-                      private juce::MultiTimer
+                      private juce::Timer
 {
 public:
     MainComponent();
@@ -43,92 +47,97 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
+    // Asks to save unsaved changes, then calls `quit` (unless cancelled).
+    void requestQuit (std::function<void()> quit);
+    // Command line: a session file to open or audio files to import, plus
+    // "--screenshot <png> [--mix]" (saves a picture of the window and quits).
+    void handleCommandLine (const juce::StringArray& args);
+
+    juce::ApplicationCommandManager& getCommandManager() noexcept { return commandManager; }
+
+    // ApplicationCommandTarget
+    juce::ApplicationCommandTarget* getNextCommandTarget() override { return nullptr; }
+    void getAllCommands (juce::Array<juce::CommandID>&) override;
+    void getCommandInfo (juce::CommandID, juce::ApplicationCommandInfo&) override;
+    bool perform (const InvocationInfo&) override;
+
+    // MenuBarModel
+    juce::StringArray getMenuBarNames() override;
+    juce::PopupMenu getMenuForIndex (int index, const juce::String&) override;
+    void menuItemSelected (int, int) override {}
+
+    // AppActions
+    void showInsertMenu (int trackId, int entryId, juce::Component& anchor) override;
+    void openPluginEditor (int trackId, int entryId) override;
+    void importFiles (const juce::StringArray& files, int trackId, juce::int64 position) override;
+    void locate (juce::int64 position) override;
+    void showTrackMenu (int trackId) override;
+    void showMessage (const juce::String&) override;
+
 private:
-    enum TimerId { noticeTimer = 1, statusTimer = 2, autosaveTimer = 3, periodicSaveTimer = 4, restorePedalTimer = 5 };
+    class BusyOverlay;
 
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
-    void timerCallback (int timerId) override;   // timed notice / status line
+    void timerCallback() override;
 
-    void syncWithDevice();
-    void showNoDeviceNotice();
-    void updateStatus();
-    void showNotice (const juce::String& text, bool sticky = false, int durationMs = 0);
-    void clearNotice();          // the device problem is solved: removes everything
-    void endTimedNotice();       // back to the device problem message, or nothing
+    PluginChain* chainFor (int trackId);
+    void closeStaleEditors();
+    void closeEditorsOf (int trackId);
 
-    void chainChanged();
+    void newSession();
+    void openSessionChooser();
+    void openSession (const juce::File&);
+    void saveSession (std::function<void (bool saved)> then = {});
+    void saveSessionAs (std::function<void (bool saved)> then = {});
+    void confirmDiscard (std::function<void()> proceed);
+    void importChooser();
+    void bounceChooser();
     void showAudioSettings();
-    void showAddPluginMenu();
-    void startScan();
-    void updateScanButton();
-    void openEditor (int id);
-    void closeEditor (int id);
+    void renameTrackDialog (int trackId);
+    void deleteTrack (int trackId);
 
-    // Output mute
-    void setMuted (bool muted);
-    void updateMuteButton();
+    void togglePlay();
+    void toggleRecord();
+    void syncLoop();
+    void zoomBy (double factor);
+    void zoomToFit();
+    void showMix (bool);
+    void updateTitle();
+    void deviceChanged();
+    juce::File defaultSessionFolder() const;
+    std::vector<int> editTracks() const;   // the tracks an edit command applies to
 
-    // Mono output (left = right), remembered like the mute state
-    void setMono (bool mono);
-    void updateMonoButton();
-
-    // Presets and the automatically saved chain
-    void showPresetMenu();
-    void askPresetNameAndSave();
-    void savePreset (const juce::String& name);
-    void confirmAndLoadPreset (const juce::String& name);
-    void confirmAndDeletePreset (const juce::String& name);
-    enum class RestoreKind { launch, preset };
-    void restoreChain (const juce::XmlElement& state, const juce::String& what, RestoreKind kind);
-    void restoreLastChain();
-    void scheduleAutosave();
-    void saveLastChainNow (bool reportErrors = true);
-    void updateEditingEnabled();
-
-    // --- Owned objects. Declaration order matters: members are destroyed in
-    // reverse order, which gives the required teardown order:
-    //   1. editor windows (an editor must not outlive its processor),
-    //   2. the PluginChain (deletes retired slots; needs the ChainProcessor),
-    //   3. the PluginScanner (needs the format manager),
-    //   4. the AudioEngine (its destructor shuts the device down; it owns the
-    //      ChainProcessor, which deletes the slots still in the chain),
-    //   5. the AudioPluginFormatManager (plugin instances, created through it,
-    //      are all gone by now).
-    // The UI controls come after the engine, so the level meters (which read
-    // the engine's meter sources from a timer) die before it.
-    PresetStore store;   // files only; no plugin or audio objects inside
-    juce::AudioPluginFormatManager formatManager;
-    AudioEngine engine;
+    // --- Owned objects. Declaration order is teardown order reversed:
+    // windows and editors die first, then the session (its PluginChains and
+    // track references), then the scanner, then the engine (which deletes the
+    // last snapshots and with them the plugin instances), then the formats.
+    std::unique_ptr<juce::PropertiesFile> settings;
+    juce::AudioPluginFormatManager pluginFormats;
+    juce::AudioFormatManager audioFormats;
+    MixEngine engine;
     PluginScanner scanner;
-    PluginChain chain;
+    std::unique_ptr<Session> session;
 
-    juce::TooltipWindow tooltipWindow { nullptr, 700 };   // on the desktop: not clipped to this window
-    juce::Label noticeLabel, statusLabel;
-    juce::TextButton audioSettingsButton, presetButton, scanButton, muteButton, monoButton;
-    LevelMeter inputMeter, outputMeter;
-    ChainListComponent chainList;
+    EditState editState;
+    juce::ApplicationCommandManager commandManager;
+    juce::TooltipWindow tooltipWindow { nullptr, 700 };
+    std::unique_ptr<juce::MenuBarComponent> menuBar;
+    std::unique_ptr<TransportBar> transport;
+    std::unique_ptr<EditWindow> editWindow;
+    std::unique_ptr<MixWindow> mixWindow;
+    bool mixShown = false;
 
-    std::map<int, std::unique_ptr<PluginEditorWindow>> editorWindows;   // entry id -> window
+    juce::String message, persistentWarning, startupError;
+    juce::uint32 messageUntil = 0;
+    juce::Rectangle<int> statusArea;
 
-    // The audio settings dialog is owned by the desktop once launched; it holds
-    // a reference to the device manager, so the destructor deletes it if open.
+    std::map<std::pair<int, int>, std::unique_ptr<PluginEditorWindow>> editorWindows;   // (track, entry) -> window
     juce::Component::SafePointer<juce::DialogWindow> settingsDialog;
-
-    // The "save preset" name dialog. Owned here (not self-deleting) so its text
-    // can be read in the result callback; destroyed with this component.
-    std::unique_ptr<juce::AlertWindow> presetNameDialog;
-
-    // When last-chain.xml may be written (see AutosaveGate).
-    AutosaveGate autosaveGate;
-    bool autosaveErrorShown = false;   // a failing autosave is reported once
-
-    // The device problem message, if any. It stays until the problem is solved;
-    // a timed notice may cover it for a while and it comes back afterwards.
-    juce::String stickyNoticeText;
-
-    // Device tracking for beginner-facing notices.
-    juce::String startupDeviceError;   // why the device failed to open at launch, kept until one opens
-    juce::String lastDeviceName;       // the device last seen open; empty before the first one
+    std::unique_ptr<juce::FileChooser> chooser;
+    std::unique_ptr<juce::AlertWindow> textDialog;
+    std::unique_ptr<Bouncer> bouncer;
+    std::unique_ptr<BusyOverlay> overlay;
+    juce::String lastWindowTitle;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };

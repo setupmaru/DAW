@@ -1,7 +1,39 @@
 #include "TestProcessors.h"
 
 #include "plugins/PluginChain.h"
-#include "audio/AudioEngine.h"
+#include "engine/MixEngine.h"
+
+namespace
+{
+// Stands in for the old single-chain AudioEngine: one armed track that
+// monitors device input 0 through its insert chain while the transport is
+// stopped, mixed to the outputs at unity gain.
+class TestEngine
+{
+public:
+    TestEngine()
+    {
+        track->setArmed (true);
+        track->setInput (0, false);
+        auto snapshot = std::make_unique<PlaybackSnapshot>();
+        snapshot->addTrack (track, {});
+        engine.publish (std::move (snapshot));
+    }
+
+    ChainProcessor& getChain() { return track->getChain(); }
+    void prepareForTest (double sampleRate, int blockSize) { engine.prepareForTest (sampleRate, blockSize); }
+    void audioDeviceStopped() { engine.audioDeviceStopped(); }
+    void audioDeviceIOCallbackWithContext (const float* const* in, int numIn, float* const* out, int numOut,
+                                           int numSamples, const juce::AudioIODeviceCallbackContext& context)
+    {
+        engine.audioDeviceIOCallbackWithContext (in, numIn, out, numOut, numSamples, context);
+    }
+
+private:
+    MixEngine engine;
+    std::shared_ptr<TrackAudio> track = engine.createTrackAudio();
+};
+} // namespace
 
 namespace
 {
@@ -219,7 +251,7 @@ struct PluginChainTests : public juce::UnitTest
     void testStateRoundTrip()
     {
         beginTest ("state XML round trip restores ordered binary state, bypass and descriptions without a device");
-        AudioEngine engine;
+        TestEngine engine;
         juce::AudioPluginFormatManager formats;
         PluginChain model (engine.getChain(), formats, statefulFactory());
         expect (model.addProcessor (std::make_unique<StatefulProcessor> (1.0f, 0.25f), "Offset"));
@@ -298,7 +330,7 @@ struct PluginChainTests : public juce::UnitTest
     void testRestoreFailuresAndEditGuard()
     {
         beginTest ("serial async creation preserves XML order across failures and refuses edits while restoring");
-        AudioEngine engine;
+        TestEngine engine;
         juce::AudioPluginFormatManager formats;
         std::vector<PluginChain::CreateCallback> callbacks;
         juce::StringArray requested;
@@ -390,7 +422,7 @@ struct PluginChainTests : public juce::UnitTest
     void testRestoreDestructionAndPendingAdd()
     {
         beginTest ("restore destruction suppresses completion and deletes a late created processor");
-        AudioEngine engine;
+        TestEngine engine;
         juce::AudioPluginFormatManager formats;
         PluginChain::CreateCallback pending;
         auto model = std::make_unique<PluginChain> (engine.getChain(), formats,
@@ -434,7 +466,7 @@ struct PluginChainTests : public juce::UnitTest
     {
         beginTest ("edits without a device do not fill the command queue and survive startup");
 
-        AudioEngine engine;
+        TestEngine engine;
         juce::AudioPluginFormatManager formats;
         PluginChain model (engine.getChain(), formats);
         juce::StringArray errors;
@@ -465,7 +497,7 @@ struct PluginChainTests : public juce::UnitTest
     {
         beginTest ("stopped edits exceed both queue capacities without deleting processors before onChanged");
 
-        AudioEngine engine;
+        TestEngine engine;
         engine.prepareForTest (kSampleRate, kBlock);
         juce::AudioPluginFormatManager formats;
         PluginChain model (engine.getChain(), formats);

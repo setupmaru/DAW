@@ -20,8 +20,13 @@ public:
         return "Malgun Gothic";
        #elif JUCE_MAC
         return "Apple SD Gothic Neo";
-       #else   // JUCE_LINUX (and other Unix-likes)
-        return "Noto Sans CJK KR";
+       #else   // JUCE_LINUX (and other Unix-likes): the first installed font with Hangul
+        const auto installed = juce::Font::findAllTypefaceNames();
+        // Unifont covers Hangul but looks rough; DejaVu at least shows Latin text.
+        for (const auto* name : { "Noto Sans CJK KR", "Noto Sans KR", "NanumGothic", "UnDotum", "Unifont", "DejaVu Sans" })
+            if (installed.contains (name))
+                return name;
+        return installed.isEmpty() ? juce::String ("Noto Sans CJK KR") : installed[0];
        #endif
     }
 

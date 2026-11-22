@@ -2,7 +2,7 @@
 ; Built by installer/build-installer.ps1, which stages the files and passes:
 ;   /DAppVersion=1.0.0  /DStageDir=<folder with DAW.exe ...>  /DOutputDir=<output folder>
 ;
-; User data (presets, settings, plugin cache in %APPDATA%\DAW) is not touched
+; User data (settings, plugin cache, unsaved recordings in %APPDATA%\DAW) is not touched
 ; by install or uninstall.
 
 #ifndef AppVersion

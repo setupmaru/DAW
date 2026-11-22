@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(DAW VERSION 1.0.1 LANGUAGES C CXX)
+project(DAW VERSION 2.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,40 +27,48 @@ FetchContent_MakeAvailable(JUCE)
 
 enable_testing()
 
-# --- Source lists. Later tasks only add files to these lists. -------------
+# --- Source lists ------------------------------------------------------------
 # Core sources: compiled into BOTH DAW and DAWTests (no static lib, to avoid
 # linking JUCE modules twice).
 set(DAW_CORE_SOURCES
     src/audio/ChainProcessor.cpp
-    src/audio/AudioEngine.cpp
     src/plugins/PluginChain.cpp
-    # src/audio/...
+    src/plugins/PluginScanner.cpp
+    src/engine/AudioData.cpp
+    src/engine/Clip.cpp
+    src/engine/TrackAudio.cpp
+    src/engine/MixEngine.cpp
+    src/session/Session.cpp
+    src/session/SessionFile.cpp
+    src/session/Bouncer.cpp
 )
 # App-only sources (DAW only).
 set(DAW_APP_SOURCES
     src/Main.cpp
     src/MainComponent.cpp
-    src/plugins/PluginScanner.cpp
     src/plugins/PluginEditorWindow.cpp
-    src/ui/ChainListComponent.cpp
-    src/ui/LevelMeter.cpp
-    src/ui/PresetStore.cpp
+    src/ui/EditState.cpp
+    src/ui/MeterBar.cpp
+    src/ui/TransportBar.cpp
+    src/ui/TimelineView.cpp
+    src/ui/EditWindow.cpp
+    src/ui/ChannelStrip.cpp
+    src/ui/MixWindow.cpp
 )
 # Test sources (DAWTests only).
 set(DAW_TEST_SOURCES
     tests/TestMain.cpp
     tests/SmokeTest.cpp
     tests/ChainProcessorTests.cpp
-    tests/AudioEngineTests.cpp
     tests/PluginChainTests.cpp
     tests/PluginScannerTests.cpp
-    # App-only, also compiled here so its queueing logic can be tested
-    # without VST3 plugins (an empty format manager).
-    src/plugins/PluginScanner.cpp
-    tests/PresetStoreTests.cpp
-    tests/AutosaveGateTests.cpp
-    # App-only file handling for presets; tested in a temporary folder.
-    src/ui/PresetStore.cpp
+    tests/ClipEditTests.cpp
+    tests/MixEngineTests.cpp
+    tests/SessionTests.cpp
+    tests/TimelineViewTests.cpp
+    # App-only UI, compiled here so mouse editing can be tested without a window.
+    src/ui/EditState.cpp
+    src/ui/TimelineView.cpp
 )
 
 # --- Shared settings -------------------------------------------------------
@@ -109,6 +117,7 @@ endfunction()
 juce_add_gui_app(DAW PRODUCT_NAME "DAW")
 target_sources(DAW PRIVATE ${DAW_CORE_SOURCES} ${DAW_APP_SOURCES})
 daw_configure_target(DAW)
+target_compile_definitions(DAW PRIVATE DAW_VERSION_STRING="${PROJECT_VERSION}")
 
 # --- Tests -----------------------------------------------------------------
 juce_add_console_app(DAWTests PRODUCT_NAME "DAWTests")
