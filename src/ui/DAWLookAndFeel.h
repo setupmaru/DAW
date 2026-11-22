@@ -20,6 +20,7 @@ namespace DAWColours
     inline const juce::Colour record       { 0xffe0463c };
     inline const juce::Colour solo         { 0xffe6c53c };
     inline const juce::Colour mute         { 0xffe08a3c };
+    inline const juce::Colour input        { 0xff5fd37a };
     inline const juce::Colour grid         { 0xff30343b };
     inline const juce::Colour gridBar      { 0xff3c414a };
 }

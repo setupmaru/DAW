@@ -113,6 +113,7 @@ struct SessionTests : public juce::UnitTest
         s.setTrackPan (b->id, 0.25f);
         s.setTrackMute (b->id, true);
         s.setTrackInput (b->id, 2, true);
+        s.setTrackInputMonitor (b->id, true);
         s.setMasterVolume (-1.0f);
 
         // The source is outside the session folder: saving copies it in.
@@ -152,6 +153,8 @@ struct SessionTests : public juce::UnitTest
         expectEquals (ka.volumeDb, -3.5f);
         expectEquals (kb.pan, 0.25f);
         expect (kb.mute && kb.stereoInput && kb.inputChannel == 2);
+        expect (kb.inputMonitor && ! ka.inputMonitor, "input monitor is saved");
+        expect (kb.getAudioPtr()->isInputMonitor(), "and reaches the engine");
         expectEquals ((int) ka.clips.size(), 1);
         expectEquals ((int) ka.clips[0].start, 480);
         expectEquals ((int) kb.clips.size(), 2);

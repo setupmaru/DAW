@@ -513,7 +513,9 @@ void MixEngine::renderChunk (juce::int64 pos, int n, bool isPlayingNow, bool isR
 
             // Auto input monitoring: an armed track plays its input while
             // stopped or recording, and its clips during normal playback.
-            const bool monitor = audio.isArmed() && (! isPlayingNow || isRecordingNow) && inputs != nullptr;
+            // Input monitoring ("I") plays the input all the time.
+            const bool monitor = inputs != nullptr
+                                 && (audio.isInputMonitor() || (audio.isArmed() && (! isPlayingNow || isRecordingNow)));
 
             if (monitor)
             {

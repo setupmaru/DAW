@@ -134,6 +134,7 @@ juce::String save (Session& session, const juce::File& target)
         t->setAttribute ("pan", (double) track->pan);
         t->setAttribute ("mute", track->mute);
         t->setAttribute ("solo", track->solo);
+        t->setAttribute ("inputMonitor", track->inputMonitor);
         t->setAttribute ("input", track->inputChannel);
         t->setAttribute ("stereoInput", track->stereoInput);
 
@@ -237,6 +238,7 @@ bool load (Session& session, const juce::File& file, juce::String& error,
         session.setTrackPan (track->id, (float) t->getDoubleAttribute ("pan"));
         session.setTrackMute (track->id, t->getBoolAttribute ("mute"));
         session.setTrackSolo (track->id, t->getBoolAttribute ("solo"));
+        session.setTrackInputMonitor (track->id, t->getBoolAttribute ("inputMonitor"));
         session.setTrackInput (track->id, t->getIntAttribute ("input"), t->getBoolAttribute ("stereoInput"));
 
         auto& list = clips[track->id];

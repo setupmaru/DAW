@@ -12,7 +12,7 @@
 #include <memory>
 
 // One row of the track list on the left of the edit window:
-//   colour | name            [R] [S] [M]
+//   colour | name        [R] [I] [S] [M]
 //          | input ▼   volume ────●──   meter
 class TrackHeader : public juce::Component
 {
@@ -39,7 +39,7 @@ private:
     std::shared_ptr<TrackAudio> audio;
 
     juce::Label nameLabel;
-    juce::TextButton recButton { "R" }, soloButton { "S" }, muteButton { "M" };
+    juce::TextButton recButton { "R" }, inputButton { "I" }, soloButton { "S" }, muteButton { "M" };
     juce::ComboBox inputBox;
     juce::Slider volume;
     MeterBar meter;

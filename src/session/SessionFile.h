@@ -7,7 +7,7 @@
 // Reading and writing session files (*.dawsession, XML):
 //
 //   <DAWSession version="1" sampleRate="48000" tempo="120">
-//     <Track id name colour volumeDb pan mute solo input stereoInput>
+//     <Track id name colour volumeDb pan mute solo inputMonitor input stereoInput>
 //       <Clip id name file start offset length gainDb fadeIn fadeOut/>
 //       <DAWChain .../>            the insert chain (PluginChain format)
 //     </Track>

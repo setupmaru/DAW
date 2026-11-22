@@ -33,6 +33,7 @@ public:
     float volumeDb = 0.0f;
     float pan = 0.0f;          // -1 (left) .. 1 (right)
     bool mute = false, solo = false, armed = false;
+    bool inputMonitor = false; // "I": always hear the input instead of the clips
     int inputChannel = 0;      // device input (0-based); with stereoInput, also inputChannel + 1
     bool stereoInput = false;
 
@@ -108,6 +109,7 @@ public:
     void setTrackMute (int id, bool);
     void setTrackSolo (int id, bool);
     void setTrackArmed (int id, bool);
+    void setTrackInputMonitor (int id, bool);
     void setTrackInput (int id, int firstChannel, bool stereo);
 
     PluginChain& getMasterInserts() noexcept { return *masterInserts; }

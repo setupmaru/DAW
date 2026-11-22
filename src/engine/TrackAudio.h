@@ -40,6 +40,10 @@ public:
     bool isSoloed() const noexcept         { return solo.load(); }
     void setArmed (bool a) noexcept        { armed.store (a); }
     bool isArmed() const noexcept          { return armed.load(); }
+    // Input monitoring ("I"): the track always plays its input instead of
+    // its clips, armed or not, playing or not.
+    void setInputMonitor (bool m) noexcept { inputMonitor.store (m); }
+    bool isInputMonitor() const noexcept   { return inputMonitor.load(); }
 
     // Input for monitoring and recording: device input `firstChannel`, or the
     // pair (firstChannel, firstChannel + 1) when stereo.
@@ -78,7 +82,7 @@ private:
     ChainProcessor chain;
 
     std::atomic<float> volumeDb { 0.0f }, pan { 0.0f };
-    std::atomic<bool> mute { false }, solo { false }, armed { false }, inputStereo { false };
+    std::atomic<bool> mute { false }, solo { false }, armed { false }, inputMonitor { false }, inputStereo { false };
     std::atomic<int> inputChannel { 0 };
 
     juce::AudioBuffer<float> buffer;

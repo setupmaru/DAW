@@ -53,6 +53,7 @@ void Track::pushParameters()
     audio->setMute (mute);
     audio->setSolo (solo);
     audio->setArmed (armed);
+    audio->setInputMonitor (inputMonitor);
     audio->setInput (inputChannel, stereoInput);
 }
 
@@ -292,6 +293,8 @@ void Session::setTrackArmed (int id, bool a)
         return;   // the takes of the pass in progress are fixed
     DAW_SET_TRACK_PARAM (armed, a)
 }
+
+void Session::setTrackInputMonitor (int id, bool m) { DAW_SET_TRACK_PARAM (inputMonitor, m) }
 
 void Session::setTrackInput (int id, int firstChannel, bool stereo)
 {

@@ -202,6 +202,18 @@ struct MixEngineTests : public juce::UnitTest
         engine.play();
         auto playing = run (engine, 1024, &input);
         expectWithinAbsoluteError (playing.getSample (0, 500), 0.25f, 1.0e-6f, "playback, not input");
+
+        // "I": the input all the time, armed or not, playing or not.
+        track->setArmed (false);
+        track->setInputMonitor (true);
+        auto monitored = run (engine, 1024, &input);
+        expectWithinAbsoluteError (monitored.getSample (0, 500), 0.5f, 1.0e-6f, "input monitor while playing, not armed");
+        engine.stop();
+        auto monitoredStopped = run (engine, 1024, &input);
+        expectWithinAbsoluteError (monitoredStopped.getSample (1, 500), 0.5f, 1.0e-6f, "input monitor while stopped");
+        track->setInputMonitor (false);
+        auto off = run (engine, 1024, &input);
+        expectWithinAbsoluteError (off.getSample (0, 500), 0.0f, 1.0e-6f, "neither armed nor monitoring: silence when stopped");
     }
 
     void testSnapshotChurn()

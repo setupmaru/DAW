@@ -83,9 +83,11 @@ ChannelStrip::ChannelStrip (Session& s, AppActions& a, int id)
             addAndMakeVisible (b);
         };
         setup (recButton, DAWColours::record, utf8 ("녹음 준비"));
+        setup (inputButton, DAWColours::input, utf8 ("입력 모니터: 재생 중에도 입력 소리를 들려줍니다"));
         setup (soloButton, DAWColours::solo, utf8 ("솔로"));
         setup (muteButton, DAWColours::mute, utf8 ("음소거"));
         recButton.onClick = [this] { if (auto* t = session.findTrack (trackId)) session.setTrackArmed (trackId, ! t->armed); };
+        inputButton.onClick = [this] { if (auto* t = session.findTrack (trackId)) session.setTrackInputMonitor (trackId, ! t->inputMonitor); };
         soloButton.onClick = [this] { if (auto* t = session.findTrack (trackId)) session.setTrackSolo (trackId, ! t->solo); };
         muteButton.onClick = [this] { if (auto* t = session.findTrack (trackId)) session.setTrackMute (trackId, ! t->mute); };
     }
@@ -118,6 +120,7 @@ void ChannelStrip::refresh()
         if (! pan.isMouseButtonDown())
             pan.setValue (track->pan, juce::dontSendNotification);
         recButton.setToggleState (track->armed, juce::dontSendNotification);
+        inputButton.setToggleState (track->inputMonitor, juce::dontSendNotification);
         soloButton.setToggleState (track->solo, juce::dontSendNotification);
         muteButton.setToggleState (track->mute, juce::dontSendNotification);
 
@@ -230,8 +233,9 @@ void ChannelStrip::resized()
         pan.setBounds (r.removeFromTop (44).withSizeKeepingCentre (44, 44));
         r.removeFromTop (4);
         auto buttons = r.removeFromTop (22);
-        const int w = buttons.getWidth() / 3;
+        const int w = buttons.getWidth() / 4;
         recButton.setBounds (buttons.removeFromLeft (w).reduced (1));
+        inputButton.setBounds (buttons.removeFromLeft (w).reduced (1));
         soloButton.setBounds (buttons.removeFromLeft (w).reduced (1));
         muteButton.setBounds (buttons.reduced (1));
     }

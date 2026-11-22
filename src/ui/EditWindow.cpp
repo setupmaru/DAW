@@ -36,12 +36,14 @@ TrackHeader::TrackHeader (Session& s, EditState& e, AppActions& a, Track& track)
     addAndMakeVisible (nameLabel);
 
     styleToggle (recButton, DAWColours::record, utf8 ("녹음 준비: 녹음할 때 이 트랙에 녹음하고, 정지 중에는 입력 소리를 들려줍니다"));
+    styleToggle (inputButton, DAWColours::input, utf8 ("입력 모니터: 재생 중에도 클립 대신 입력 소리를 들려줍니다"));
     styleToggle (soloButton, DAWColours::solo, utf8 ("솔로: 이 트랙만 듣기"));
     styleToggle (muteButton, DAWColours::mute, utf8 ("음소거"));
     recButton.onClick = [this] { if (auto* t = session.findTrack (trackId)) session.setTrackArmed (trackId, ! t->armed); };
+    inputButton.onClick = [this] { if (auto* t = session.findTrack (trackId)) session.setTrackInputMonitor (trackId, ! t->inputMonitor); };
     soloButton.onClick = [this] { if (auto* t = session.findTrack (trackId)) session.setTrackSolo (trackId, ! t->solo); };
     muteButton.onClick = [this] { if (auto* t = session.findTrack (trackId)) session.setTrackMute (trackId, ! t->mute); };
-    for (auto* b : { &recButton, &soloButton, &muteButton })
+    for (auto* b : { &recButton, &inputButton, &soloButton, &muteButton })
         addAndMakeVisible (b);
 
     inputBox.setWantsKeyboardFocus (false);
@@ -93,6 +95,7 @@ void TrackHeader::refresh()
     if (! nameLabel.isBeingEdited())
         nameLabel.setText (track->name, juce::dontSendNotification);
     recButton.setToggleState (track->armed, juce::dontSendNotification);
+    inputButton.setToggleState (track->inputMonitor, juce::dontSendNotification);
     soloButton.setToggleState (track->solo, juce::dontSendNotification);
     muteButton.setToggleState (track->mute, juce::dontSendNotification);
 
@@ -130,6 +133,7 @@ void TrackHeader::resized()
     auto row1 = r.removeFromTop (24);
     muteButton.setBounds (row1.removeFromRight (26).reduced (1));
     soloButton.setBounds (row1.removeFromRight (26).reduced (1));
+    inputButton.setBounds (row1.removeFromRight (26).reduced (1));
     recButton.setBounds (row1.removeFromRight (26).reduced (1));
     nameLabel.setBounds (row1);
 

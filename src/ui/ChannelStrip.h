@@ -12,7 +12,7 @@
 //   inserts (8 slots; click an empty one to add a plugin)
 //   input ▼
 //   pan knob
-//   [R] [S] [M]
+//   [R] [I] [S] [M]
 //   fader | meter
 //   dB value
 //   name
@@ -43,7 +43,7 @@ private:
 
     juce::ComboBox inputBox;
     juce::Slider pan, fader;
-    juce::TextButton recButton { "R" }, soloButton { "S" }, muteButton { "M" };
+    juce::TextButton recButton { "R" }, inputButton { "I" }, soloButton { "S" }, muteButton { "M" };
     juce::Label dbLabel, nameLabel;
     std::unique_ptr<MeterBar> meter;
     int shownInputs = -1;
